@@ -1,8 +1,26 @@
-mercury_main:
-        - sources: ../mercury/source/main.cpp
-        - includes: ../mercury
-        - libraries: ncurses
-        - flags:
-                - '-DMERCURY_SOURCE_DIR=\\\"../mercury\\\"'
-                - '-g'
-                - '-O3'
+sources:
+        - mercury: ../smercury/source/main.cpp
+
+builds:
+        - mercury_main:
+                - sources: mercury
+                - includes: ../mercury
+                - libraries: ncurses
+                - flags:
+                        - '-DMERCURY_SOURCE_DIR=\\\"../mercury\\\"'
+        - mercury_gdb:
+                - sources: mercury
+                - includes: ../mercury
+                - libraries: ncurses
+                - flags:
+                        - '-DMERCURY_SOURCE_DIR=\\\"../mercury\\\"'
+                        - '-g'
+
+targets:
+        - mercury:
+                - modes: default, debug
+                - builds:
+                        - default: mercury_main
+                        - debug: mercury_gdb
+                - postexecs:
+                        - default: '{}'
