@@ -1,5 +1,8 @@
 mercury_main:
-        - sources: main.cpp
+        - sources: ../mercury/source/main.cpp
         - includes: ../mercury
         - libraries: ncurses
-        - flags: "-DMERCURY_SOURCE_DIR=\\\"../mercury\\\""
+        - flags:
+                - '-DMERCURY_SOURCE_DIR=\\\"../mercury\\\"'
+                - '-g'
+                - '-O3'

@@ -48,6 +48,6 @@ libraries = [
 ]
 
 # TODO: add options to define macros
-build = build.Build('mercury', sources, includes,
+build = build.Build('mercury', 'mercury_main', sources, includes,
         libraries, '-DMERCURY_SOURCE_DIR=\\\"../mercury\\\"')
 build.run()

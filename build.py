@@ -10,24 +10,33 @@ class colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
+    PURPLE = '\033[95m'
 
 class Build:
     cache = '.smake'
-    odir = '.smake/build'
-    tdir = '.smake/target'
+    bdir = '.smake/builds'
+    tdir = '.smake/targets'
 
-    def __init__(self, target, sources, idirs = [], libs = [], flags = ''):
+    # TODO: each build should have a name
+    # Build is build name
+    def __init__(self, target, build, sources, idirs = [], libs = [], flags = []):
+        # Set immediate properties
         self.target = target
+        self.build = build
         self.sources = sources
-        self.flags = flags
-
         self.compiler = 'g++'
 
+        # TODO: make function for directory creation
         # Create the cache directory
         if not os.path.exists(self.cache):
             os.mkdir(self.cache)
+
+        # Create build dir
+        if not os.path.exists(self.bdir):
+            os.mkdir(self.bdir)
         
         # Create the output directory
+        self.odir = self.bdir + '/' + self.build
         if not os.path.exists(self.odir):
             os.mkdir(self.odir)
         
@@ -37,18 +46,27 @@ class Build:
             os.mkdir(self.tdir)
 
         # Includes
-        # TODO: filter includes
+        # TODO: filter includes, check if they exist
+        self.idirs = ''
         if len(idirs) > 0:
             self.idirs = ''.join([' -I ' + idir for idir in idirs])
-        else:
-            self.idirs = ''
 
         # Libraries
         self.libs = ''
         if len(libs) > 0:
             self.libs = ''.join([' -l' + lib for lib in libs])
 
+        # Flags
+        self.flags = ''
+        if len(flags) > 0:
+            self.flags = ''.join(flags)
+
     def compile(self, file):
+        # Check if file exists
+        if not os.path.exists(file):
+            print(colors.FAIL + f'\tFile {file} does not exist' + colors.ENDC)
+            return ''
+
         # Get file name without directory
         fname = os.path.basename(file)
 
@@ -66,16 +84,25 @@ class Build:
         # Compile the source
         cmd = '{} {} -c -o {} {} {}'.format(self.compiler, self.flags,
                 ofile, file, self.idirs)
-        os.system(cmd)
+        ret = os.system(cmd)
         
-        # TODO: check error
+        # Check if compilation failed
+        if ret != 0:
+            return ''
 
+        # Return object
         return ofile
 
     # TODO: add option for verbose
     def run(self):
         # List of compiled files
         compiled = []
+
+        # Compilation failure flag
+        failed = False
+
+        # Failed sources
+        fsources = []
 
         # Generate format string
         slen = str(len(self.sources))
@@ -84,27 +111,49 @@ class Build:
 
         # Compile the sources
         for i in range(len(self.sources)):
-            # TODO: show the target building message
-
-            # Print
-            # print(f'[{i + 1}/{len(self.sources)}] Compiling {self.sources[i]}')
+            # Print the message
             print(fstr.format(i + 1, self.sources[i]))
+
+            # Compile the file (or attempt to)
             ofile = self.compile(self.sources[i])
 
-            # TODO: check failure
+            # Check failure
+            if len(ofile) == 0:
+                fsources.append(self.sources[i])
+                failed = True
 
             # Add to compiled list
             compiled.append(ofile)
-        
-        # Compile all the objects
-        # TODO: skip if any source failed to compile
-        #   keep compiling other ones though
-        cmd = '{} {} -o {} {}'.format(self.compiler, ' '.join(compiled),
-            self.tpath, self.libs)
-        print(colors.OKBLUE + f'Linking executable {self.target}' + colors.ENDC)
-        # print(cmd)
 
-        os.system(cmd)
+        # Check if any of the sources failed to compile
+        if failed:
+            # Print message
+            print('\n' + colors.FAIL + 'Failed to compile the' + \
+                ' following sources,' + ' skipping linking process' + \
+                colors.ENDC)
+
+            # Print failed sources
+            for file in fsources:
+                print(colors.PURPLE + '\t' + file + colors.ENDC)
+
+            # Return empty for failure
+            return ''
+        else:
+            # Command generation
+            compiled_str = ' '.join(compiled)
+            cmd = f'{self.compiler} {compiled_str} -o {self.tpath} {self.libs}'
+
+            # Print message
+            print(colors.OKBLUE + f'Linking executable {self.target}' + colors.ENDC)
+
+            # Check return of linking
+            ret = os.system(cmd)
+            if ret != 0:
+                # Print message and return empty
+                print(colors.FAIL + f'Failed to link target {self.target}' + \
+                        colors.ENDC)
+
+                return ''
 
         # Return the location of the target
         return self.tpath
