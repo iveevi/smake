@@ -348,6 +348,7 @@ class Config:
 
         return tlist
 
+    # Read config file
     def load_file(self, file):
         # Open and read the config
         with open(file, 'r') as file:
@@ -361,9 +362,43 @@ class Config:
 
         # Load all targets
         self.targets = self.load_all_targets(smake, builds, defns)
+
+    # List all targets
+    def list_targets(self):
+        # Max string length of target name
+        maxlen = 0
+        for t in self.targets:
+            if len(t) > maxlen:
+                maxlen = len(t)
+        
+        # Padding
+        maxlen += 5
+
+        # Header message
+        fmt = colors.OKCYAN + '{:<' + str(maxlen) + '}{}' + colors.ENDC
+        print(fmt.format('Target', 'Modes'))
+
+        # Print the targets
+        for t in self.targets:
+            modes = ''
+            for i in range(len(self.targets[t].modes)):
+                modes += self.targets[t].modes[i]
+
+                if i != len(self.targets[t].modes) - 1:
+                    modes += ', '
+            
+            fmt = colors.OKBLUE + '{:<' + str(maxlen) + '}' + \
+                colors.PURPLE + '{}' + colors.ENDC
+            print(fmt.format(t, modes))
     
     # Run the correct target
     def run(self, target, mode = 'default'):
+        # If the target is all, then run all targets
+        if target == 'all':
+            for t in self.targets:
+                self.targets[t].run(mode)
+            return
+
         # Check if the target is valid
         if target in self.targets:
             self.targets[target].run(mode)
@@ -377,10 +412,15 @@ class Config:
 parser = argparse.ArgumentParser()
 
 # {TARGET} -m {EXECUTOR} -j{THREADS}
-parser.add_argument("target", help="Database name")
+parser.add_argument("target", help="Target name", nargs='?', default='all')
 parser.add_argument("-m", "--mode", help="Execution mode", default='')
 parser.add_argument("-j", "--threads",
                     help="Number of concurrent threads", type=int, default=8)
+
+# Special args
+parser.add_argument("-l", "--list", help="List all targets", action='store_true')
+parser.add_argument("--clear-cache", help="Clear smake cache", action='store_true')
+parser.add_argument("-v", "--verbose", help="Verbose mode", action='store_true')
 
 # Read the arguments
 args = parser.parse_args()
@@ -389,4 +429,9 @@ args = parser.parse_args()
 config = Config()
 
 # Run the target
-config.run(args.target, args.mode)
+if args.list:
+    config.list_targets()
+elif args.clear_cache:
+    os.system('rm -rf .smake')
+else:
+    config.run(args.target, args.mode)

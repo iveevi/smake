@@ -90,3 +90,5 @@ Clone this repository and run `smake` to get started (available targets are
 - [ ] Add options for parallelizing builds
 - [ ] Easier way to define macro arguments for the compilers
 - [ ] List function for `smake`
+- [ ] Verbose option for `smake`
+- [ ] Default to target `all`
