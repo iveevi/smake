@@ -85,10 +85,6 @@ Clone this repository and run `smake` to get started (available targets are
 
 ## Future features
 
-- [ ] Specifying default compilers (and setting the non-default compiler through `smake`)
 - [ ] Pre-build scripts, for cases where source code needs to be auto-generated
 - [ ] Add options for parallelizing builds
 - [ ] Easier way to define macro arguments for the compilers
-- [ ] List function for `smake`
-- [ ] Verbose option for `smake`
-- [ ] Default to target `all`

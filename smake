@@ -36,14 +36,19 @@ class Build:
     bdir = '.smake/builds'
     tdir = '.smake/targets'
 
+    # Default compiler and standard
+    default_compiler = 'g++'
+    default_standard = 'c++11'
+
     # TODO: each build should have a name
     # Build is build name
-    def __init__(self, target, build, sources, idirs = [], libs = [], flags = []):
+    def __init__(self, target, build, compiler, sources,
+        idirs = [], libs = [], flags = []):
         # Set immediate properties
         self.target = target
         self.build = build
         self.sources = sources
-        self.compiler = 'g++'
+        self.compiler = compiler
 
         # TODO: make function for directory creation
         # Create the cache directory
@@ -79,6 +84,8 @@ class Build:
         self.flags = ''
         if len(flags) > 0:
             self.flags = ' '.join(flags)
+        else:
+            self.flags = '-std={}'.format(self.default_standard)
         
     # Update target name
     def set_target(self, target):
@@ -86,7 +93,7 @@ class Build:
         self.tpath = self.tdir + '/' + self.target
 
     # Compile a single file
-    def compile(self, file):
+    def compile(self, file, verbose = False):
         # Check if file exists
         if not os.path.exists(file):
             print(colors.FAIL + f'\tFile {file} does not exist' + colors.ENDC)
@@ -104,22 +111,29 @@ class Build:
         if os.path.exists(ofile):
             ofile_t = os.path.getmtime(ofile)
             if ofile_t > file_t:
+                print(colors.OKCYAN + 'Source already compiled' + colors.ENDC)
                 return ofile
 
         # Compile the source
         cmd = '{} {} -c -o {} {} {}'.format(self.compiler, self.flags,
                 ofile, file, self.idirs)
+
+        # Print command if verbose
+        if verbose:
+            print(colors.PURPLE + cmd + colors.ENDC)
+        else:
+            print()
+
+        # Run command and check if it was successful
         ret = os.system(cmd)
-        
-        # Check if compilation failed
         if ret != 0:
             return ''
 
         # Return object
         return ofile
 
-    # TODO: add option for verbose
-    def run(self):
+    # Compile all sources
+    def run(self, verbose = False):
         # List of compiled files
         compiled = []
 
@@ -132,15 +146,15 @@ class Build:
         # Generate format string
         slen = str(len(self.sources))
         fstr = colors.OKCYAN + '[{:>' + str(len(slen)) + '}/' + slen + '] ' \
-            + colors.OKGREEN + 'Compiling {}' + colors.ENDC
+            + colors.OKGREEN + 'Compiling {}... ' + colors.ENDC
 
         # Compile the sources
         for i in range(len(self.sources)):
             # Print the message
-            print(fstr.format(i + 1, self.sources[i]))
+            print(fstr.format(i + 1, self.sources[i]), end='')
 
             # Compile the file (or attempt to)
-            ofile = self.compile(self.sources[i])
+            ofile = self.compile(self.sources[i], verbose)
 
             # Check failure
             if len(ofile) == 0:
@@ -169,7 +183,14 @@ class Build:
             cmd = f'{self.compiler} {compiled_str} -o {self.tpath} {self.libs}'
 
             # Print message
-            print(colors.OKBLUE + f'Linking executable {self.target}' + colors.ENDC)
+            print(colors.OKBLUE + f'Linking executable {self.target}... '.ljust(50)
+                + colors.ENDC, end='')
+
+            # Print command if verbose
+            if verbose:
+                print(colors.PURPLE + cmd + colors.ENDC)
+            else:
+                print()
 
             # Check return of linking
             ret = os.system(cmd)
@@ -191,7 +212,7 @@ class Target:
         self.builds = builds
         self.postbuilds = postbuilds
 
-    def run(self, mode = 'default'):
+    def run(self, mode = 'default', verbose = False):
         # Empty is always a valid mode, but `default should be used'
         if len(mode) == 0:
             mode = 'default'
@@ -200,7 +221,7 @@ class Target:
         build = self.builds[mode]
 
         # Run the build
-        target = build.run()
+        target = build.run(verbose)
 
         # Run postbuild with target argument, if present
         if mode in self.postbuilds:
@@ -261,6 +282,13 @@ class Config:
             for sgroup in smake['sources']:
                 defns.update(sgroup)
         
+        # Default compiler and standard
+        if 'default_compiler' in smake:
+            Build.default_compiler = smake['default_compiler']
+        
+        if 'default_standard' in smake:
+            Build.default_standard = smake['default_standard']
+        
         # Return the dictionary
         return defns
     
@@ -278,6 +306,7 @@ class Config:
         includes = []
         libraries = []
         flags = []
+        compiler = Build.default_compiler
 
         if 'includes' in properties:
             includes = split(properties, 'includes', defns)
@@ -287,9 +316,13 @@ class Config:
         
         if 'flags' in properties:
             flags = split(properties, 'flags', defns)
+        
+        if 'compiler' in properties:
+            compiler = properties['compiler']
 
         # Create and return the object
-        return Build('smake-build', name, sources, includes, libraries, flags)
+        return Build('smake-build', name, compiler, sources, includes,
+            libraries, flags)
 
     def load_all_builds(self, smake, defns):
         # TODO: check that builds actually exists
@@ -392,16 +425,16 @@ class Config:
             print(fmt.format(t, modes))
     
     # Run the correct target
-    def run(self, target, mode = 'default'):
+    def run(self, target, mode = 'default', verbose = False):
         # If the target is all, then run all targets
         if target == 'all':
             for t in self.targets:
-                self.targets[t].run(mode)
+                self.targets[t].run(mode, verbose)
             return
 
         # Check if the target is valid
         if target in self.targets:
-            self.targets[target].run(mode)
+            self.targets[target].run(mode, verbose)
         else:
             print(colors.FAIL + f'No target {target} found.' + \
                 ' Perhaps you meant one of the following:' + colors.ENDC)
@@ -434,4 +467,4 @@ if args.list:
 elif args.clear_cache:
     os.system('rm -rf .smake')
 else:
-    config.run(args.target, args.mode)
+    config.run(args.target, args.mode, args.verbose)

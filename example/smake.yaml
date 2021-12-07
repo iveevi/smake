@@ -1,8 +1,13 @@
+default_compiler: clang++
+default_standard: c++14
+
 builds:
         - basic:
                 - sources: example/basic/main.cpp
+                - compiler: g++-8
         - multisource:
                 - sources: example/multisource/main.cpp, example/multisource/chip.cpp
+                - libraries: pthread
                 - flags: -std=c++11
         - multisource_debug:
                 - sources: example/multisource/main.cpp, example/multisource/chip.cpp
