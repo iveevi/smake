@@ -1,12 +1,14 @@
 import build
 import script
 
+from colors import colors
+
 class Target:
-    def __init__(self, name, modes, builds, postexecs):
+    def __init__(self, name, modes, builds, postbuilds):
         self.name = name
         self.modes = modes
         self.builds = builds
-        self.postexecs = postexecs
+        self.postbuilds = postbuilds
 
     def run(self, mode = 'default'):
         # Empty is always a valid mode, but `default should be used'
@@ -15,10 +17,17 @@ class Target:
         
         # Retrieve run attributes
         build = self.builds[mode]
-        postexec = self.postexecs[mode]
 
         # Run the build
         target = build.run()
 
-        # TODO: Run postexec with target argument
-        postexec.run(target)
+        # Run postbuild with target argument, if present
+        if mode in self.postbuilds:
+            if len(target) == 0:
+                print(colors.FAIL + '\nFailed to compile target, skipping postbuild script' + colors.ENDC)
+                return
+
+            postbuild = self.postbuilds[mode]
+            print(colors.OKBLUE + '\nSucessfully compiled target, ' + \
+                'running postbuild script\n' + colors.ENDC)
+            postbuild.run(target)

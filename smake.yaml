@@ -1,26 +1,25 @@
-sources:
-        - mercury: ../smercury/source/main.cpp
-
 builds:
-        - mercury_main:
-                - sources: mercury
-                - includes: ../mercury
-                - libraries: ncurses
-                - flags:
-                        - '-DMERCURY_SOURCE_DIR=\\\"../mercury\\\"'
-        - mercury_gdb:
-                - sources: mercury
-                - includes: ../mercury
-                - libraries: ncurses
-                - flags:
-                        - '-DMERCURY_SOURCE_DIR=\\\"../mercury\\\"'
-                        - '-g'
+        - basic:
+                - sources: example/basic/main.cpp
+        - multisource:
+                - sources: example/multisource/main.cpp, example/multisource/chip.cpp
+                - flags: -std=c++11
+        - multisource_debug:
+                - sources: example/multisource/main.cpp, example/multisource/chip.cpp
+                - libraries: pthread
+                - flags: -std=c++11, -g
 
 targets:
-        - mercury:
-                - modes: default, debug
+        - basic:
+                - modes: default
                 - builds:
-                        - default: mercury_main
-                        - debug: mercury_gdb
-                - postexecs:
-                        - default: '{}'
+                        - default: basic
+        - multisource:
+                - modes: default, gdb
+                - builds:
+                        - default: multisource
+                        - gdb: multisource_debug
+                        - lldb: multisource_debug
+                - postbuild:
+                        - gdb: 'gdb {}'
+                        - lldb: 'lldb {}'

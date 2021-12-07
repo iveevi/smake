@@ -49,8 +49,14 @@ class Build:
         # Flags
         self.flags = ''
         if len(flags) > 0:
-            self.flags = ''.join(flags)
+            self.flags = ' '.join(flags)
+        
+    # Update target name
+    def set_target(self, target):
+        self.target = target
+        self.tpath = self.tdir + '/' + self.target
 
+    # Compile a single file
     def compile(self, file):
         # Check if file exists
         if not os.path.exists(file):

@@ -5,6 +5,7 @@ import glob
 from build import Build
 from target import Target
 from script import Script
+from colors import colors
 
 # Global helper functions
 def split(d, pr, defns):
@@ -50,8 +51,9 @@ class Config:
         defns = {}
         
         # Load sources
-        for sgroup in smake['sources']:
-            defns.update(sgroup)
+        if 'sources' in smake:
+            for sgroup in smake['sources']:
+                defns.update(sgroup)
         
         # Return the dictionary
         return defns
@@ -65,12 +67,23 @@ class Config:
 
         # Preprocess properties
         sources = split(properties, 'sources', defns)
-        includes = split(properties, 'includes', defns)
-        libraries = split(properties, 'libraries', defns)
-        flags = split(properties, 'flags', defns)
+
+        # Optional properties
+        includes = []
+        libraries = []
+        flags = []
+
+        if 'includes' in properties:
+            includes = split(properties, 'includes', defns)
+        
+        if 'libraries' in properties:
+            libraries = split(properties, 'libraries', defns)
+        
+        if 'flags' in properties:
+            flags = split(properties, 'flags', defns)
 
         # Create and return the object
-        return Build('example', name, sources, includes, libraries, flags)
+        return Build('smake-build', name, sources, includes, libraries, flags)
 
     def load_all_builds(self, smake, defns):
         # TODO: check that builds actually exists
@@ -92,9 +105,12 @@ class Config:
         # Preprocess properties
         modes = split(properties, 'modes', defns)
 
-        # Gets builds and postexecs
+        # Gets builds and postbuilds
         builds = concat(properties['builds'])
-        postexecs = concat(properties['postexecs'])
+
+        postbuilds = {}
+        if 'postbuild' in properties:
+            postbuilds = concat(properties['postbuild'])
 
         # Preprocess predefined things
         # TODO: separate methods
@@ -103,18 +119,19 @@ class Config:
 
             if bname in blist:
                 builds[b] = blist[bname]
+                builds[b].set_target(name)
             # TODO: errir handling here
         
-        # If the postexec is a string, then convert to Script
-        for pe in postexecs:
-            pname = postexecs[pe]
+        # If the postbuild is a string, then convert to Script
+        for pe in postbuilds:
+            pname = postbuilds[pe]
 
             if pname in defns:
-                postexecs[pe] = defns[pname]
+                postbuilds[pe] = defns[pname]
             else:
-                postexecs[pe] = Script(pname)
+                postbuilds[pe] = Script(pname)
 
-        return Target(name, modes, builds, postexecs)
+        return Target(name, modes, builds, postbuilds)
 
     def load_all_targets(self, smake, builds, defns):
         tlist = {}
@@ -141,5 +158,11 @@ class Config:
     
     # Run the correct target
     def run(self, target, mode = 'default'):
-        # TODO: error handle
-        self.targets[target].run(mode)
+        # Check if the target is valid
+        if target in self.targets:
+            self.targets[target].run(mode)
+        else:
+            print(colors.FAIL + f'No target {target} found.' + \
+                ' Perhaps you meant one of the following:' + colors.ENDC)
+            for valid in list(self.targets.keys()):
+                print(colors.PURPLE + f'\t{valid}' + colors.ENDC)
