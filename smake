@@ -161,7 +161,8 @@ class Build:
         # Compile the sources
         for i in range(len(self.sources)):
             # Print the message
-            print(fstr.format(i + 1, self.sources[i]), end='')
+            s = fstr.format(i + 1, self.sources[i])
+            print(s.ljust(80), end='')
 
             # Compile the file (or attempt to)
             ofile = self.compile(self.sources[i], verbose)
@@ -193,8 +194,8 @@ class Build:
             cmd = f'{self.compiler} {compiled_str} -o {self.tpath} {self.ldirs} {self.libs} {self.rpaths}'
 
             # Print message
-            print(colors.OKBLUE + f'Linking executable {self.target}... '.ljust(50)
-                + colors.ENDC, end='')
+            s = colors.OKBLUE + f'Linking executable {self.target}... ' + colors.ENDC
+            print(s.ljust(75), end='')
 
             # Print command if verbose
             if verbose:
@@ -364,16 +365,24 @@ class Config:
         properties = {}
         for d in target[name]:
             properties.update(d)
+
+        # Warn unused sections
+        used = ['modes', 'builds', 'postbuilds']
+        for key in properties:
+            if key not in used:
+                print(colors.WARNING + f'Section {key} is not used by smake' + colors.ENDC)
         
         # Preprocess properties
-        modes = split(properties, 'modes', defns)
+        modes = ['default']
+        if 'modes' in properties:
+            modes.extend(split(properties, 'modes', defns))
 
         # Gets builds and postbuilds
         builds = concat(properties['builds'])
 
         postbuilds = {}
-        if 'postbuild' in properties:
-            postbuilds = concat(properties['postbuild'])
+        if 'postbuilds' in properties:
+            postbuilds = concat(properties['postbuilds'])
 
         # Preprocess predefined things
         # TODO: separate methods

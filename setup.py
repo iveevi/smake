@@ -6,7 +6,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
         name = 'smake',
-        version = '1.0.1',
+        version = '1.1.0',
         scripts = ['smake'],
         author = "Venkataram Edavamadathil Sivaram",
         author_email = "vesion4690@gmail.com",
