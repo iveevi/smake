@@ -1,4 +1,7 @@
+*.egg-info
 *.log
 .smake
 .vscode
 __pycache__
+build
+dist
