@@ -25,16 +25,15 @@ One can also simply clone the source and link the `smake` executable.
 
 ## How does it work?
 
-Smake searches for all `smake.yaml` files in the current directory, recursively, 
-and creates the configurations for each target, including all modes and their 
+Smake searches for a `smake.yaml` file in the current directory and creates configurations for each target, including all modes and their 
 corresponding builds and post-build scripts, etc.
 
 The structure of an `smake` configuration file is as follows (in no strict 
 order):
 
 ```yaml
-# Groups of sources that can be referenced in builds
-sources:
+# Variables that can be referenced in builds
+definitions:
   - gsourceA: fileA.c, fileB.c
 
 # List of builds that will be used by the targets
@@ -88,3 +87,4 @@ Clone this repository and run `smake` to get started (available targets are
 - [ ] Pre-build scripts, for cases where source code needs to be auto-generated
 - [ ] Add options for parallelizing builds
 - [ ] Easier way to define macro arguments for the compilers
+- [ ] Detect changes in included headers

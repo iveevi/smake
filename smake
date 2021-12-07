@@ -235,16 +235,28 @@ class Target:
             postbuild.run(target)
 
 # Global helper functions
-def split(d, pr, defns):
-    prop = d[pr]
-    if isinstance(prop, str):
+def split_plain(elem):
+    prop = elem
+    if isinstance(elem, str):
         prop = prop.split(', ')
-    
+    return prop
+
+def split(d, pr, defns):
+    prop = split_plain(d[pr])
+
+    out = []
     for i in range(len(prop)):
         if prop[i] in defns:
-            prop[i] = defns[prop[i]]
+            value = defns[prop[i]]
 
-    return prop
+            if isinstance(value, list):
+                out.extend(value)
+            else:
+                out.append(value)
+        else:
+            out.append(prop[i])
+    
+    return out
 
 def concat(ldicts):
     out = {}
@@ -259,16 +271,9 @@ class Config:
         # Initialize targets to empty
         self.targets = {}
 
-        # Get config files from current dir
-        configs = []
-        for root, _, files in os.walk('.'):
-            for file in files:
-                if file == 'smake.yaml':
-                    configs.append(os.path.join(root, file))
-
-        # Load all files from the current directory
-        for file in configs:
-            self.load_file(file)
+        # Get config file from current dir
+        if os.path.exists('smake.yaml'):
+            self.load_file('smake.yaml')
 
     # Reads definitions from variables like sources, includes, etc.
     def load_definitions(self, smake):
@@ -277,10 +282,12 @@ class Config:
         # Output dictionary
         defns = {}
         
-        # Load sources
-        if 'sources' in smake:
-            for sgroup in smake['sources']:
-                defns.update(sgroup)
+        # Load definitions
+        if 'definitions' in smake:
+            for dgroup in smake['definitions']:
+                key, value = next(iter(dgroup.items()))
+                value = split_plain(value)
+                defns.update({key: value})
         
         # Default compiler and standard
         if 'default_compiler' in smake:
@@ -325,7 +332,10 @@ class Config:
             libraries, flags)
 
     def load_all_builds(self, smake, defns):
-        # TODO: check that builds actually exists
+        # Check that builds actually exists
+        if 'builds' not in smake:
+            print(colors.FAIL + 'No builds defined in smake.yaml' + colors.ENDC)
+            exit(-1)
 
         blist = {}
         for b in smake['builds']:
@@ -373,8 +383,13 @@ class Config:
         return Target(name, modes, builds, postbuilds)
 
     def load_all_targets(self, smake, builds, defns):
+        # Check that targets exist
+        if 'targets' not in smake:
+            print(colors.FAIL + 'No targets specified in smake.yaml' + colors.ENDC)
+            exit(-1)
+
         tlist = {}
-        for t in smake['targets']:  # TODO: error handle presence of targets
+        for t in smake['targets']:
             name = list(t)[0]
             target = self.load_target(t, builds, defns)
             tlist.update({name: target})
@@ -398,6 +413,11 @@ class Config:
 
     # List all targets
     def list_targets(self):
+        # Return if no targets
+        if len(self.targets) == 0:
+            print(colors.FAIL + 'No targets found' + colors.ENDC)
+            return
+
         # Max string length of target name
         maxlen = 0
         for t in self.targets:
