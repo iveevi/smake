@@ -1,3 +1,4 @@
 *.log
 .smake
+.vscode
 __pycache__

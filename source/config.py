@@ -2,10 +2,10 @@ import os
 import yaml
 import glob
 
-from build import Build
-from target import Target
-from script import Script
-from colors import colors
+from source.build import Build
+from source.target import Target
+from source.script import Script
+from source.colors import colors
 
 # Global helper functions
 def split(d, pr, defns):

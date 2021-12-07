@@ -1,6 +1,6 @@
 import os
 
-from colors import colors
+from source.colors import colors
 
 class Build:
     cache = '.smake'

@@ -1,7 +1,7 @@
-import build
-import script
+import source.build
+import source.script
 
-from colors import colors
+from source.colors import colors
 
 class Target:
     def __init__(self, name, modes, builds, postbuilds):
