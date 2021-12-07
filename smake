@@ -43,7 +43,7 @@ class Build:
     # TODO: each build should have a name
     # Build is build name
     def __init__(self, target, build, compiler, sources,
-        idirs = [], libs = [], flags = []):
+        idirs = [], libs = [], ldirs = [], flags = []):
         # Set immediate properties
         self.target = target
         self.build = build
@@ -70,10 +70,20 @@ class Build:
             os.mkdir(self.tdir)
 
         # Includes
-        # TODO: filter includes, check if they exist
         self.idirs = ''
         if len(idirs) > 0:
             self.idirs = ''.join([' -I ' + idir for idir in idirs])
+        
+        # Library dirs and rpath
+        self.ldirs = ''
+        if len(ldirs) > 0:
+            self.ldirs = ''.join([' -L' + ldir for ldir in ldirs])
+
+        # Runtime paths
+        self.rpaths = ''
+        if len(ldirs) > 0:
+            self.rpaths = ' -Wl,'
+            self.rpaths += ''.join(['-rpath ' + ldir for ldir in ldirs])
 
         # Libraries
         self.libs = ''
@@ -180,7 +190,7 @@ class Build:
         else:
             # Command generation
             compiled_str = ' '.join(compiled)
-            cmd = f'{self.compiler} {compiled_str} -o {self.tpath} {self.libs}'
+            cmd = f'{self.compiler} {compiled_str} -o {self.tpath} {self.ldirs} {self.libs} {self.rpaths}'
 
             # Print message
             print(colors.OKBLUE + f'Linking executable {self.target}... '.ljust(50)
@@ -312,14 +322,18 @@ class Config:
         # Optional properties
         includes = []
         libraries = []
+        ldirs = []
         flags = []
         compiler = Build.default_compiler
 
-        if 'includes' in properties:
-            includes = split(properties, 'includes', defns)
+        if 'idirs' in properties:
+            includes = split(properties, 'idirs', defns)
         
         if 'libraries' in properties:
             libraries = split(properties, 'libraries', defns)
+
+        if 'ldirs' in properties:
+            ldirs = split(properties, 'ldirs', defns)
         
         if 'flags' in properties:
             flags = split(properties, 'flags', defns)
@@ -329,7 +343,7 @@ class Config:
 
         # Create and return the object
         return Build('smake-build', name, compiler, sources, includes,
-            libraries, flags)
+            libraries, ldirs, flags)
 
     def load_all_builds(self, smake, defns):
         # Check that builds actually exists
