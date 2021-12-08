@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 import argparse
+import copy
 import glob
 import os
+import re
 import yaml
 
 # Colors
@@ -40,7 +42,48 @@ class Build:
     default_compiler = 'g++'
     default_standard = 'c++11'
 
-    # TODO: each build should have a name
+    # Find header from include and source directories
+    def get_header(self, header):
+        # Check directories of the source first
+        for sdir in self.sdirs:
+            path = os.path.join(sdir, header)
+            if os.path.exists(path):
+                return path
+
+        # Check include directories
+        for idir in self.idirs:
+            path = os.path.join(idir, header)
+            if os.path.exists(path):
+                return path
+        
+        # Assume its standard
+        return None
+
+    # Get header dependencies for a source
+    #   which are not the standard library
+    def get_deps(self, source):
+        with open(source) as file:
+            lines = file.readlines()
+
+        for line in lines:
+            if line.startswith('#include'):
+                # TODO: join regexes?
+                ht1 = re.search('#include <(.+)>', line)
+                ht2 = re.search('#include \"(.+)\"', line)
+
+                if ht1:
+                    header = self.get_header(ht1.group(1))
+                elif ht2:
+                    header = self.get_header(ht2.group(1))
+                
+                if header and header not in self.all_deps:
+                    self.all_deps.add(header)
+                    self.get_deps(header)
+                
+        # Deep copy so that the dictionary does
+        # not get modified from future dependency searches
+        return {source: copy.deepcopy(self.all_deps)}
+
     # Build is build name
     def __init__(self, target, build, compiler, sources,
         idirs = [], libs = [], ldirs = [], flags = []):
@@ -96,11 +139,33 @@ class Build:
             self.flags = ' '.join(flags)
         else:
             self.flags = '-std={}'.format(self.default_standard)
+
+        # Populate the directory for each source
+        self.sdirs = set()
+        for source in sources:
+            self.sdirs.add(os.path.dirname(source))
+
+        # Create dependency map for each sort
+        self.deps = {}
+        for source in sources:
+            self.all_deps = set()   # Temporary variable for recursion
+            self.deps.update(self.get_deps(source))
+        
+        print('deps:', self.deps)
         
     # Update target name
     def set_target(self, target):
         self.target = target
         self.tpath = self.tdir + '/' + self.target
+
+    # Get most recent time from source and its dependencies
+    def getmtime(self, file):
+        mtime = os.path.getmtime(file)
+        for dep in self.deps[file]:
+            mt = os.path.getmtime(dep)
+            if mt > mtime:
+                mtime = mt
+        return mtime
 
     # Compile a single file
     def compile(self, file, verbose = False):
@@ -117,7 +182,7 @@ class Build:
             '.o').replace('.c', '.o'))
 
         # Check if compilation is necessary
-        file_t = os.path.getmtime(file)
+        file_t = self.getmtime(file)
         if os.path.exists(ofile):
             ofile_t = os.path.getmtime(ofile)
             if ofile_t > file_t:

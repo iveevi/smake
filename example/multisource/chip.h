@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+// Typedefs
 typedef std::vector <std::vector <bool>> pack_t;
 typedef std::vector <bool> row;
 typedef std::vector <size_t> specs;

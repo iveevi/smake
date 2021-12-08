@@ -7,6 +7,7 @@
 #include "aug_chip.h"
 #include "chip.h"
 
+// Sequential chips
 namespace sequential {
 	
 	const double eps = 1E-10;
