@@ -223,12 +223,18 @@ class Target:
         self.builds = builds
         self.postbuilds = postbuilds
 
+        # Check that each mode has a build
+
     def run(self, mode = 'default', verbose = False):
         # Empty is always a valid mode, but `default should be used'
         if len(mode) == 0:
             mode = 'default'
         
         # Retrieve run attributes
+        if not (mode in self.modes):
+            print(colors.FAIL + f'{mode} is not a valid build for target {self.name}' + colors.ENDC)
+            exit(-1)
+
         build = self.builds[mode]
 
         # Run the build
@@ -282,9 +288,16 @@ class Config:
         # Initialize targets to empty
         self.targets = {}
 
+        # Set installations to empty
+        self.installs = {}
+
         # Get config file from current dir
         if os.path.exists('smake.yaml'):
             self.load_file('smake.yaml')
+        else:
+            print(colors.FAIL + 'No smake config file (smake.yaml)' + \
+                ' in current directory' + colors.ENDC)
+            exit(-1)
 
     # Reads definitions from variables like sources, includes, etc.
     def load_definitions(self, smake):
@@ -317,7 +330,17 @@ class Config:
         for d in build[name]:
             properties.update(d)
 
+        # Check unused sections
+        used = ['sources', 'idirs', 'libraries', 'ldirs', 'flags', 'compiler']
+        for key in properties:
+            if key not in used:
+                print(colors.WARNING + f'Section \"{key}\" in builds is not used by smake' + colors.ENDC)
+
         # Preprocess properties
+        if 'sources' not in properties:
+            print(colors.FAIL + f'Build \"{name}\" has no listed sources' + colors.ENDC)
+            exit(-1)
+
         sources = split(properties, 'sources', defns)
 
         # Optional properties
@@ -370,7 +393,7 @@ class Config:
         used = ['modes', 'builds', 'postbuilds']
         for key in properties:
             if key not in used:
-                print(colors.WARNING + f'Section {key} is not used by smake' + colors.ENDC)
+                print(colors.WARNING + f'Section {key} in targets is not used by smake' + colors.ENDC)
         
         # Preprocess properties
         modes = ['default']
@@ -418,12 +441,33 @@ class Config:
             tlist.update({name: target})
 
         return tlist
+    
+    # Read all installs
+    def load_all_installs(self, smake, defns):
+        if 'installs' not in smake:
+            return {}
+            
+        installs = {}
+        for install in smake['installs']:
+            for script in install:
+                slist = split_plain(install[script])
+                installs.update({script: Script(*slist)})
+        return installs
 
     # Read config file
     def load_file(self, file):
         # Open and read the config
         with open(file, 'r') as file:
             smake = yaml.safe_load(file)
+
+        # Check unused sections
+        # TODO: line numbers
+        used = ['default_compiler', 'default_standard',
+            'definitions', 'builds', 'targets', 'installs']
+        
+        for section in smake:
+            if section not in used:
+                print(colors.WARNING + f'Section {section} is not used by smake' + colors.ENDC)
         
         # Load the definitions
         defns = self.load_definitions(smake)
@@ -434,12 +478,15 @@ class Config:
         # Load all targets
         self.targets = self.load_all_targets(smake, builds, defns)
 
+        # Load all installs
+        self.installs = self.load_all_installs(smake, defns)
+
     # List all targets
     def list_targets(self):
         # Return if no targets
         if len(self.targets) == 0:
             print(colors.FAIL + 'No targets found' + colors.ENDC)
-            return
+            exit(-1)
 
         # Max string length of target name
         maxlen = 0
@@ -469,8 +516,13 @@ class Config:
     
     # Run the correct target
     def run(self, target, mode = 'default', verbose = False):
+        # Check if targets are empty
+        if len(self.targets) == 0:
+            print(colors.FAIL + 'No targets in smake' + colors.ENDC)
+            exit(-1)
+
         # If the target is all, then run all targets
-        if target == 'all':
+        if target == 'all':        
             for t in self.targets:
                 self.targets[t].run(mode, verbose)
             return
@@ -483,20 +535,32 @@ class Config:
                 ' Perhaps you meant one of the following:' + colors.ENDC)
             for valid in list(self.targets.keys()):
                 print(colors.PURPLE + f'\t{valid}' + colors.ENDC)
+    
+    # Run installation for a target
+    def install(self, target):
+        # Check presence of install target
+        if target not in self.installs:
+            print(colors.FAIL + f'No target \"{target}\" in installs section' + colors.ENDC)
+            exit(-1)
+        
+        # Get the script and execute it
+        script = self.installs[target]
+        script.run('')
 
 # Build the parser
 parser = argparse.ArgumentParser()
 
 # {TARGET} -m {EXECUTOR} -j{THREADS}
-parser.add_argument("target", help="Target name", nargs='?', default='all')
-parser.add_argument("-m", "--mode", help="Execution mode", default='')
-parser.add_argument("-j", "--threads",
-                    help="Number of concurrent threads", type=int, default=8)
+parser.add_argument('target', help="Target name", nargs='?', default='all')
+parser.add_argument('-m', "--mode", help="Execution mode", default='')
+parser.add_argument('-j', "--threads",
+                    help = "Number of concurrent threads", type=int, default=8)
 
 # Special args
-parser.add_argument("-l", "--list", help="List all targets", action='store_true')
-parser.add_argument("--clear-cache", help="Clear smake cache", action='store_true')
-parser.add_argument("-v", "--verbose", help="Verbose mode", action='store_true')
+parser.add_argument('-l', '--list', help = 'List all targets', action = 'store_true')
+parser.add_argument('-C', '--clear-cache', help = 'Clear smake cache', action = 'store_true')
+parser.add_argument('-v', '--verbose', help = 'Verbose mode', action = 'store_true')
+parser.add_argument('-I', '--install', help = 'Install target', action = 'store_true')
 
 # Read the arguments
 args = parser.parse_args()
@@ -509,5 +573,7 @@ if args.list:
     config.list_targets()
 elif args.clear_cache:
     os.system('rm -rf .smake')
+elif args.install:
+    config.install(args.target)
 else:
     config.run(args.target, args.mode, args.verbose)

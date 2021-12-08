@@ -27,6 +27,14 @@ targets:
                         - default: multisource
                         - gdb: multisource_debug
                         - lldb: multisource_debug
-                - postbuild:
+                - postbuilds:
                         - gdb: 'gdb {}'
                         - lldb: 'lldb {}'
+
+installs:
+        - basic: 'echo Instaling basic...'
+        - multisource: ['echo Installing mutlisource...',
+                'echo Done installing.']
+        - all:
+                - 'echo Installing all...'
+                - 'echo Done installing.'
