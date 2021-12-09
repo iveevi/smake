@@ -151,8 +151,6 @@ class Build:
             self.all_deps = set()   # Temporary variable for recursion
             self.deps.update(self.get_deps(source))
         
-        print('deps:', self.deps)
-        
     # Update target name
     def set_target(self, target):
         self.target = target
