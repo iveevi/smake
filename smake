@@ -2,6 +2,7 @@
 import argparse
 import copy
 import glob
+import multiprocessing
 import os
 import re
 import yaml
@@ -43,6 +44,7 @@ class Build:
     default_standard = 'c++11'
 
     # Find header from include and source directories
+    # TODO: needs optimization
     def get_header(self, header):
         # Check directories of the source first
         for sdir in self.sdirs:
@@ -151,8 +153,6 @@ class Build:
             self.all_deps = set()   # Temporary variable for recursion
             self.deps.update(self.get_deps(source))
         
-        print('deps:', self.deps)
-        
     # Update target name
     def set_target(self, target):
         self.target = target
@@ -168,7 +168,14 @@ class Build:
         return mtime
 
     # Compile a single file
-    def compile(self, file, verbose = False):
+    def compile(self, lock_avaiable, file, msg, verbose = False):
+        # Lock if available
+        if lock_avaiable:
+            lock.acquire()
+
+        # Print the messahe
+        print(msg, end='')
+
         # Check if file exists
         if not os.path.exists(file):
             print(colors.FAIL + f'\tFile {file} does not exist' + colors.ENDC)
@@ -187,6 +194,11 @@ class Build:
             ofile_t = os.path.getmtime(ofile)
             if ofile_t > file_t:
                 print(colors.OKCYAN + 'Source already compiled' + colors.ENDC)
+        
+                # Unlock if available
+                if lock_avaiable:
+                    lock.release()
+                
                 return ofile
 
         # Compile the source
@@ -198,6 +210,10 @@ class Build:
             print(colors.PURPLE + cmd + colors.ENDC)
         else:
             print()
+        
+        # Unlock if available
+        if lock_avaiable:
+            lock.release()
 
         # Run command and check if it was successful
         ret = os.system(cmd)
@@ -206,42 +222,13 @@ class Build:
 
         # Return object
         return ofile
-
-    # Compile all sources
-    def run(self, verbose = False):
-        # List of compiled files
-        compiled = []
-
-        # Compilation failure flag
-        failed = False
-
-        # Failed sources
-        fsources = []
-
-        # Generate format string
-        slen = str(len(self.sources))
-        fstr = colors.OKCYAN + '[{:>' + str(len(slen)) + '}/' + slen + '] ' \
-            + colors.OKGREEN + 'Compiling {}... ' + colors.ENDC
-
-        # Compile the sources
-        for i in range(len(self.sources)):
-            # Print the message
-            s = fstr.format(i + 1, self.sources[i])
-            print(s.ljust(80), end='')
-
-            # Compile the file (or attempt to)
-            ofile = self.compile(self.sources[i], verbose)
-
-            # Check failure
-            if len(ofile) == 0:
-                fsources.append(self.sources[i])
-                failed = True
-
-            # Add to compiled list
-            compiled.append(ofile)
+    
+    # Link source objects
+    def link(self, compiled, fsources, verbose):
+        # TODO: avoid repeated linking
 
         # Check if any of the sources failed to compile
-        if failed:
+        if len(fsources) > 0:
             # Print message
             print('\n' + colors.FAIL + 'Failed to compile the' + \
                 ' following sources,' + ' skipping linking process' + \
@@ -253,32 +240,99 @@ class Build:
 
             # Return empty for failure
             return ''
+        
+        # Command generation
+        compiled_str = ' '.join(compiled)
+        cmd = f'{self.compiler} {compiled_str} -o {self.tpath} {self.ldirs} {self.libs} {self.rpaths}'
+
+        # Print message
+        s = colors.OKBLUE + f'Linking executable {self.target}... ' + colors.ENDC
+        print(s.ljust(75), end='')
+
+        # Print command if verbose
+        if verbose:
+            print(colors.PURPLE + cmd + colors.ENDC)
         else:
-            # Command generation
-            compiled_str = ' '.join(compiled)
-            cmd = f'{self.compiler} {compiled_str} -o {self.tpath} {self.ldirs} {self.libs} {self.rpaths}'
+            print()
 
-            # Print message
-            s = colors.OKBLUE + f'Linking executable {self.target}... ' + colors.ENDC
-            print(s.ljust(75), end='')
+        # Check return of linking
+        ret = os.system(cmd)
+        if ret != 0:
+            # Print message and return empty
+            print(colors.FAIL + f'Failed to link target {self.target}' + \
+                    colors.ENDC)
 
-            # Print command if verbose
-            if verbose:
-                print(colors.PURPLE + cmd + colors.ENDC)
-            else:
-                print()
-
-            # Check return of linking
-            ret = os.system(cmd)
-            if ret != 0:
-                # Print message and return empty
-                print(colors.FAIL + f'Failed to link target {self.target}' + \
-                        colors.ENDC)
-
-                return ''
-
-        # Return the location of the target
+            return ''
+        
         return self.tpath
+
+    # Compile all sources
+    def run(self, verbose = False):
+        # List of compiled files
+        compiled = []
+
+        # Failed sources
+        fsources = []
+
+        # Generate format string
+        slen = str(len(self.sources))
+        fstr = colors.OKCYAN + '[{:>' + str(len(slen)) + '}/' + slen + '] ' \
+            + colors.OKGREEN + 'Compiling {}... ' + colors.ENDC
+
+        # Compile the sources
+        for i in range(len(self.sources)):
+            # Create the message
+            msg = fstr.format(i + 1, self.sources[i])
+
+            # Compile the file (or attempt to)
+            ofile = self.compile(False, self.sources[i], msg, verbose)
+
+            # Check failure
+            if len(ofile) == 0:
+                fsources.append(self.sources[i])
+
+            # Add to compiled list
+            compiled.append(ofile)
+        
+        # Link all the objects
+        return self.link(compiled, fsources, verbose)
+    
+    # Make lock available to processes
+    def init(self, l):
+        global lock
+        lock = l
+    
+    # Compile multithreaded
+    def mt_run(self, threads, verbose = False):
+        # Interprocess lock
+        lock = multiprocessing.Lock()
+
+        # Generate format string
+        slen = str(len(self.sources))
+        fstr = colors.OKCYAN + '[{:>' + str(len(slen)) + '}/' + slen + '] ' \
+            + colors.OKGREEN + 'Compiling {}... ' + colors.ENDC
+        
+        # Create the arguments
+        args = []
+        for i in range(len(self.sources)):
+            msg = fstr.format(i + 1, self.sources[i])
+            args.append((True, self.sources[i], msg, verbose))
+
+        with multiprocessing.Pool(threads, initializer = self.init, initargs=(lock,)) as pool:
+            rets = pool.starmap(self.compile, args)
+
+        # Compiled and failed
+        compiled = []
+        fsources = []
+
+        for obj in rets:
+            if len(obj) == 0:
+                fsources.append(obj)
+            else:
+                compiled.append(obj)
+        
+        # Link the objects
+        return self.link(compiled, fsources, verbose)
 
 # Target class
 class Target:
@@ -290,7 +344,7 @@ class Target:
 
         # Check that each mode has a build
 
-    def run(self, mode = 'default', verbose = False):
+    def run(self, mode = 'default', threads = 0, verbose = False):
         # Empty is always a valid mode, but `default should be used'
         if len(mode) == 0:
             mode = 'default'
@@ -303,7 +357,10 @@ class Target:
         build = self.builds[mode]
 
         # Run the build
-        target = build.run(verbose)
+        if threads > 0:
+            target = build.mt_run(threads, verbose)
+        else:
+            target = build.run(verbose)
 
         # Run postbuild with target argument, if present
         if mode in self.postbuilds:
@@ -580,7 +637,7 @@ class Config:
             print(fmt.format(t, modes))
     
     # Run the correct target
-    def run(self, target, mode = 'default', verbose = False):
+    def run(self, target, mode = 'default', threads = 0, verbose = False):
         # Check if targets are empty
         if len(self.targets) == 0:
             print(colors.FAIL + 'No targets in smake' + colors.ENDC)
@@ -589,12 +646,12 @@ class Config:
         # If the target is all, then run all targets
         if target == 'all':        
             for t in self.targets:
-                self.targets[t].run(mode, verbose)
+                self.targets[t].run(mode, threads, verbose)
             return
 
         # Check if the target is valid
         if target in self.targets:
-            self.targets[target].run(mode, verbose)
+            self.targets[target].run(mode, threads, verbose)
         else:
             print(colors.FAIL + f'No target {target} found.' + \
                 ' Perhaps you meant one of the following:' + colors.ENDC)
@@ -612,33 +669,38 @@ class Config:
         script = self.installs[target]
         script.run('')
 
-# Build the parser
-parser = argparse.ArgumentParser()
+# Script as executable
+if __name__ == '__main__':
+    # Build the parser
+    parser = argparse.ArgumentParser()
 
-# {TARGET} -m {EXECUTOR} -j{THREADS}
-parser.add_argument('target', help="Target name", nargs='?', default='all')
-parser.add_argument('-m', "--mode", help="Execution mode", default='')
-parser.add_argument('-j', "--threads",
-                    help = "Number of concurrent threads", type=int, default=8)
+    # {TARGET} -m {EXECUTOR} -j{THREADS}
+    parser.add_argument('target', help="Target name", nargs='?', default='all')
+    parser.add_argument('-m', "--mode", help="Execution mode", default='')
+    parser.add_argument('-j', "--threads",
+                        help = "Number of concurrent threads", type = int, default = 0)
 
-# Special args
-parser.add_argument('-l', '--list', help = 'List all targets', action = 'store_true')
-parser.add_argument('-C', '--clear-cache', help = 'Clear smake cache', action = 'store_true')
-parser.add_argument('-v', '--verbose', help = 'Verbose mode', action = 'store_true')
-parser.add_argument('-I', '--install', help = 'Install target', action = 'store_true')
+    # Special args
+    parser.add_argument('-l', '--list', help = 'List all targets', action = 'store_true')
+    parser.add_argument('-C', '--clear-cache', help = 'Clear smake cache', action = 'store_true')
+    parser.add_argument('-v', '--verbose', help = 'Verbose mode', action = 'store_true')
+    parser.add_argument('-I', '--install', help = 'Install target', action = 'store_true')
 
-# Read the arguments
-args = parser.parse_args()
+    # Read the arguments
+    args = parser.parse_args()
+    
+    # No need to read config for this
+    if args.clear_cache:
+        os.system('rm -rf .smake')
+        exit(0)
 
-# Create the local config
-config = Config()
+    # Create the local config
+    config = Config()
 
-# Run the target
-if args.list:
-    config.list_targets()
-elif args.clear_cache:
-    os.system('rm -rf .smake')
-elif args.install:
-    config.install(args.target)
-else:
-    config.run(args.target, args.mode, args.verbose)
+    # Run the target
+    if args.list:
+        config.list_targets()
+    elif args.install:
+        config.install(args.target)
+    else:
+        config.run(args.target, args.mode, args.threads, args.verbose)
