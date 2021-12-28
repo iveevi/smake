@@ -133,7 +133,7 @@ class Build:
         # Libraries
         self.libs = ''
         if len(libs) > 0:
-            self.libs = ''.join([' -l' + lib for lib in libs])
+            self.libs = ''.join([lib if (lib[0] == '-') else (' -l' + lib) for lib in libs])
 
         # Flags
         self.flags = ''
