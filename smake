@@ -207,7 +207,7 @@ class Build:
             return ''
 
         # Get file name without directory
-        fname = os.path.basename(file)
+        fname = file.replace('/', '_')
 
         # Create the output file
         ofile = os.path.join(self.odir, fname.replace('.cpp',
