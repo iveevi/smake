@@ -6,7 +6,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
         name = 'smake',
-        version = '1.2.1',
+        version = '1.2.2',
         scripts = ['smake'],
         author = "Venkataram Edavamadathil Sivaram",
         author_email = "vesion4690@gmail.com",
@@ -15,6 +15,7 @@ setuptools.setup(
         long_description_content_type = "text/markdown",
         url = "https://github.com/vedavamadathil/smake",
         packages = setuptools.find_packages(),
+        instal_requires = ['pyyaml'],
         classifiers = [
                 "Programming Language :: Python :: 3",
                 "License :: OSI Approved :: MIT License",

@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import re
 import yaml
+import json
 
 # Colors
 class colors:
@@ -45,7 +46,14 @@ class Build:
 
     # Find header from include and source directories
     # TODO: needs optimization
-    def get_header(self, header):
+    def get_header(self, source, header):
+        # First check the header from source path
+        sdir = os.path.dirname(source)
+        hpath = sdir + '/' + header
+
+        if os.path.exists(hpath):
+            return os.path.normpath(hpath)
+
         # Check directories of the source first
         for sdir in self.sdirs:
             path = os.path.join(sdir, header)
@@ -74,9 +82,9 @@ class Build:
                 ht2 = re.search('#include \"(.+)\"', line)
 
                 if ht1:
-                    header = self.get_header(ht1.group(1))
+                    header = self.get_header(source, ht1.group(1))
                 elif ht2:
-                    header = self.get_header(ht2.group(1))
+                    header = self.get_header(source, ht2.group(1))
                 
                 if header and header not in self.all_deps:
                     self.all_deps.add(header)
@@ -84,7 +92,54 @@ class Build:
                 
         # Deep copy so that the dictionary does
         # not get modified from future dependency searches
-        return {source: copy.deepcopy(self.all_deps)}
+        return copy.deepcopy(self.all_deps)
+
+    # Build dependencies
+    def build_deps(self, sources):
+        # Dependency path
+        dfile = self.bdir + '/' + self.build + '_dependencies.json'
+
+        # Check if the file exists
+        if os.path.exists(dfile):
+            # Read the JSON
+            with open(dfile) as file:
+                deps = json.load(file)
+
+            # Convert to set
+            l = []
+            for source in deps:
+                l.append(source)
+
+                for dep in deps[source]:
+                    l.append(dep)
+
+            # Check if the dependencies file needs to be updated
+            mtime = os.path.getmtime(l[0])
+
+            for source in l:
+                mt = os.path.getmtime(source)
+                if mt > mtime:
+                    mtime = mt
+
+            # If the dependencies file is up to date, return
+            if mtime <= os.path.getmtime(dfile):
+                self.deps = deps
+                return
+
+        # Create dependency map for each sort
+        self.deps = dict()
+        for source in sources:
+            self.all_deps = set()   # Temporary variable for recursion
+
+            # Get the dependencies and convert to a list
+            sdeps = self.get_deps(source)
+            sdeps = list(sdeps)
+
+            self.deps.update({source: sdeps})
+
+        # Store the dependencies to a file
+        with open(dfile, 'w', encoding='utf-8') as file:
+            json.dump(self.deps, file, ensure_ascii=False, indent=4)
 
     # Build is build name
     def __init__(self, target, build, compiler, sources,
@@ -147,11 +202,8 @@ class Build:
         for source in sources:
             self.sdirs.add(os.path.dirname(source))
 
-        # Create dependency map for each sort
-        self.deps = {}
-        for source in sources:
-            self.all_deps = set()   # Temporary variable for recursion
-            self.deps.update(self.get_deps(source))
+        # Build dependencies
+        self.build_deps(sources)
         
     # Update target name
     def set_target(self, target):
@@ -215,6 +267,7 @@ class Build:
 
         # Check if compilation is necessary
         file_t = self.getmtime(file)
+
         if os.path.exists(ofile):
             ofile_t = os.path.getmtime(ofile)
             if ofile_t > file_t:
