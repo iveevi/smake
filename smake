@@ -81,6 +81,7 @@ class Build:
                 ht1 = re.search('#include <(.+)>', line)
                 ht2 = re.search('#include \"(.+)\"', line)
 
+                header = None
                 if ht1:
                     header = self.get_header(source, ht1.group(1))
                 elif ht2:
@@ -121,8 +122,10 @@ class Build:
                 if mt > mtime:
                     mtime = mt
 
-            # If the dependencies file is up to date, return
-            if mtime <= os.path.getmtime(dfile):
+            # If the dependencies file is up to date
+            # (with dep file AND smake file), return
+            dtime = os.path.getmtime(dfile)
+            if (mtime <= dtime) and (dtime >= os.path.getmtime('smake.yaml')):
                 self.deps = deps
                 return
 
@@ -144,6 +147,7 @@ class Build:
     # Build is build name
     def __init__(self, target, build, compiler, sources,
         idirs = [], libs = [], ldirs = [], flags = []):
+
         # Set immediate properties
         self.target = target
         self.build = build
@@ -668,7 +672,7 @@ class Config:
     # Read config file
     def load_file(self, file):
         # Open and read the config
-        with open(file, 'r') as file:
+        with open(file, 'rt', encoding='utf8') as file:
             smake = yaml.safe_load(file)
 
         # Check unused sections
