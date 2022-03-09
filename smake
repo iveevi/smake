@@ -65,13 +65,18 @@ class Build:
             path = os.path.join(idir, header)
             if os.path.exists(path):
                 return path
-        
+
         # Assume its standard
         return None
 
     # Get header dependencies for a source
     #   which are not the standard library
     def get_deps(self, source):
+        # Check that the file exists
+        if not os.path.exists(source):
+            print(colors.FAIL + 'Error: ' + source + ' does not exist' + colors.ENDC)
+            exit(-1)
+
         with open(source) as file:
             lines = file.readlines()
 
@@ -86,11 +91,11 @@ class Build:
                     header = self.get_header(source, ht1.group(1))
                 elif ht2:
                     header = self.get_header(source, ht2.group(1))
-                
+
                 if header and header not in self.all_deps:
                     self.all_deps.add(header)
                     self.get_deps(header)
-                
+
         # Deep copy so that the dictionary does
         # not get modified from future dependency searches
         return copy.deepcopy(self.all_deps)
@@ -162,12 +167,12 @@ class Build:
         # Create build dir
         if not os.path.exists(self.bdir):
             os.mkdir(self.bdir)
-        
+
         # Create the output directory
         self.odir = self.bdir + '/' + self.build
         if not os.path.exists(self.odir):
             os.mkdir(self.odir)
-        
+
         # Create target build directory
         self.tpath = self.tdir + '/' + self.target
         if not os.path.exists(self.tdir):
@@ -177,7 +182,7 @@ class Build:
         self.idirs = ''
         if len(idirs) > 0:
             self.idirs = ''.join([' -I ' + idir for idir in idirs])
-        
+
         # Library dirs and rpath
         self.ldirs = ''
         if len(ldirs) > 0:
@@ -208,7 +213,7 @@ class Build:
 
         # Build dependencies
         self.build_deps(sources)
-        
+
     # Update target name
     def set_target(self, target):
         self.target = target
@@ -234,8 +239,11 @@ class Build:
             fname = os.path.basename(file)
 
             # Create the output file
-            ofile = os.path.join(self.odir, fname.replace('.cpp',
-                '.o').replace('.c', '.o'))
+			#	get extension index
+            ext_idx = fname.rfind('.')
+            if ext_idx == -1:
+                ext_idx = len(fname)
+            ofile = self.odir + '/' + fname[:ext_idx] + '.o'
 
             # Generate command
             cmd = '{} {} -c -o {} {} {}'.format(self.compiler, self.flags,
@@ -266,8 +274,11 @@ class Build:
         fname = file.replace('/', '_')
 
         # Create the output file
-        ofile = os.path.join(self.odir, fname.replace('.cpp',
-            '.o').replace('.c', '.o'))
+        #	get extension index
+        ext_idx = fname.rfind('.')
+        if ext_idx == -1:
+            ext_idx = len(fname)
+        ofile = self.odir + '/' + fname[:ext_idx] + '.o'
 
         # Check if compilation is necessary
         file_t = self.getmtime(file)
@@ -276,11 +287,11 @@ class Build:
             ofile_t = os.path.getmtime(ofile)
             if ofile_t > file_t:
                 print(colors.OKCYAN + 'Source already compiled' + colors.ENDC)
-        
+
                 # Unlock if available
                 if lock_avaiable:
                     lock.release()
-                
+
                 return ofile
 
         # Compile the source
@@ -292,7 +303,7 @@ class Build:
             print(colors.PURPLE + cmd + colors.ENDC)
         else:
             print()
-        
+
         # Unlock if available
         if lock_avaiable:
             lock.release()
@@ -304,7 +315,7 @@ class Build:
 
         # Return object
         return ofile
-    
+
     # Link source objects
     def link(self, compiled, fsources, verbose):
         # TODO: avoid repeated linking
@@ -322,7 +333,7 @@ class Build:
 
             # Return empty for failure
             return ''
-        
+
         # Command generation
         compiled_str = ' '.join(compiled)
         cmd = f'{self.compiler} {compiled_str} -o {self.tpath} {self.ldirs} {self.libs} {self.rpaths}'
@@ -345,7 +356,7 @@ class Build:
                     colors.ENDC)
 
             return ''
-        
+
         return self.tpath
 
     # Compile all sources
@@ -375,15 +386,15 @@ class Build:
 
             # Add to compiled list
             compiled.append(ofile)
-        
+
         # Link all the objects
         return self.link(compiled, fsources, verbose)
-    
+
     # Make lock available to processes
     def init(self, l):
         global lock
         lock = l
-    
+
     # Compile multithreaded
     def mt_run(self, threads, verbose = False):
         # Interprocess lock
@@ -393,7 +404,7 @@ class Build:
         slen = str(len(self.sources))
         fstr = colors.OKCYAN + '[{:>' + str(len(slen)) + '}/' + slen + '] ' \
             + colors.OKGREEN + 'Compiling {}... ' + colors.ENDC
-        
+
         # Create the arguments
         args = []
         for i in range(len(self.sources)):
@@ -412,7 +423,7 @@ class Build:
                 fsources.append(obj)
             else:
                 compiled.append(obj)
-        
+
         # Link the objects
         return self.link(compiled, fsources, verbose)
 
@@ -441,7 +452,7 @@ class Target:
         # Empty is always a valid mode, but `default should be used'
         if len(mode) == 0:
             mode = 'default'
-        
+
         # Retrieve run attributes
         if not (mode in self.modes):
             print(colors.FAIL + f'{mode} is not a valid build for target {self.name}' + colors.ENDC)
@@ -487,7 +498,7 @@ def split(d, pr, defns):
                 out.append(value)
         else:
             out.append(prop[i])
-    
+
     return out
 
 def concat(ldicts):
@@ -520,24 +531,24 @@ class Config:
 
         # Output dictionary
         defns = {}
-        
+
         # Load definitions
         if 'definitions' in smake:
             for dgroup in smake['definitions']:
                 key, value = next(iter(dgroup.items()))
                 value = split_plain(value)
                 defns.update({key: value})
-        
+
         # Default compiler and standard
         if 'default_compiler' in smake:
             Build.default_compiler = smake['default_compiler']
-        
+
         if 'default_standard' in smake:
             Build.default_standard = smake['default_standard']
-        
+
         # Return the dictionary
         return defns
-    
+
     # Create a build object
     def load_build(self, build, defns):
         name = list(build)[0]
@@ -567,16 +578,16 @@ class Config:
 
         if 'idirs' in properties:
             includes = split(properties, 'idirs', defns)
-        
+
         if 'libraries' in properties:
             libraries = split(properties, 'libraries', defns)
 
         if 'ldirs' in properties:
             ldirs = split(properties, 'ldirs', defns)
-        
+
         if 'flags' in properties:
             flags = split(properties, 'flags', defns)
-        
+
         if 'compiler' in properties:
             compiler = properties['compiler']
 
@@ -595,7 +606,7 @@ class Config:
             name = list(b)[0]
             build = self.load_build(b, defns)
             blist.update({name: build})
-        
+
         return blist
 
     def load_target(self, target, blist, defns):
@@ -609,7 +620,7 @@ class Config:
         for key in properties:
             if key not in used:
                 print(colors.WARNING + f'Section {key} in targets is not used by smake' + colors.ENDC)
-        
+
         # Preprocess properties
         modes = ['default']
         if 'modes' in properties:
@@ -631,7 +642,7 @@ class Config:
                 builds[b] = blist[bname]
                 builds[b].set_target(name)
             # TODO: errir handling here
-        
+
         # If the postbuild is a string, then convert to Script
         for pe in postbuilds:
             pname = postbuilds[pe]
@@ -656,12 +667,12 @@ class Config:
             tlist.update({name: target})
 
         return tlist
-    
+
     # Read all installs
     def load_all_installs(self, smake, defns):
         if 'installs' not in smake:
             return {}
-            
+
         installs = {}
         for install in smake['installs']:
             for script in install:
@@ -679,11 +690,11 @@ class Config:
         # TODO: line numbers
         used = ['default_compiler', 'default_standard',
             'definitions', 'builds', 'targets', 'installs']
-        
+
         for section in smake:
             if section not in used:
                 print(colors.WARNING + f'Section {section} is not used by smake' + colors.ENDC)
-        
+
         # Load the definitions
         defns = self.load_definitions(smake)
 
@@ -708,7 +719,7 @@ class Config:
         for t in self.targets:
             if len(t) > maxlen:
                 maxlen = len(t)
-        
+
         # Padding
         maxlen += 5
 
@@ -724,7 +735,7 @@ class Config:
 
                 if i != len(self.targets[t].modes) - 1:
                     modes += ', '
-            
+
             fmt = colors.OKBLUE + '{:<' + str(maxlen) + '}' + \
                 colors.PURPLE + '{}' + colors.ENDC
             print(fmt.format(t, modes))
@@ -744,7 +755,7 @@ class Config:
         # Write to file
         with open('compile_commands.json', 'w') as file:
             file.write(ccmds)
-    
+
     # Run the correct target
     def run(self, target, mode = 'default', threads = 0, verbose = False):
         # Check if targets are empty
@@ -753,7 +764,7 @@ class Config:
             exit(-1)
 
         # If the target is all, then run all targets
-        if target == 'all':        
+        if target == 'all':
             for t in self.targets:
                 self.targets[t].run(mode, threads, verbose)
             return
@@ -766,14 +777,14 @@ class Config:
                 ' Perhaps you meant one of the following:' + colors.ENDC)
             for valid in list(self.targets.keys()):
                 print(colors.PURPLE + f'\t{valid}' + colors.ENDC)
-    
+
     # Run installation for a target
     def install(self, target):
         # Check presence of install target
         if target not in self.installs:
             print(colors.FAIL + f'No target \"{target}\" in installs section' + colors.ENDC)
             exit(-1)
-        
+
         # Get the script and execute it
         script = self.installs[target]
         script.run('')
@@ -798,7 +809,7 @@ if __name__ == '__main__':
 
     # Read the arguments
     args = parser.parse_args()
-    
+
     # No need to read config for this
     if args.clear_cache:
         os.system('rm -rf .smake')
