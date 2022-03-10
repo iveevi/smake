@@ -21,6 +21,17 @@ class colors:
     UNDERLINE = '\033[4m'
     PURPLE = '\033[95m'
 
+# Generate error message
+def error(type, color, message):
+    return colors.BOLD + 'smake: ' + color + type + ': ' + colors.ENDC + message
+
+# Assert that a file exists
+def assert_file(file_path):
+    if not os.path.exists(file_path):
+        msg = 'file ' + file_path + ' does not exist'
+        print(error('fatal error', colors.FAIL, msg))
+        exit(-1)
+
 # Script class
 class Script:
     def __init__(self, *kargs):
@@ -99,42 +110,10 @@ class Build:
         # Deep copy so that the dictionary does
         # not get modified from future dependency searches
         return copy.deepcopy(self.all_deps)
-
-    # Build dependencies
-    def build_deps(self, sources):
-        # Dependency path
-        dfile = self.bdir + '/' + self.build + '_dependencies.json'
-
-        # Check if the file exists
-        if os.path.exists(dfile):
-            # Read the JSON
-            with open(dfile) as file:
-                deps = json.load(file)
-
-            # Convert to set
-            l = []
-            for source in deps:
-                l.append(source)
-
-                for dep in deps[source]:
-                    l.append(dep)
-
-            # Check if the dependencies file needs to be updated
-            mtime = os.path.getmtime(l[0])
-
-            for source in l:
-                mt = os.path.getmtime(source)
-                if mt > mtime:
-                    mtime = mt
-
-            # If the dependencies file is up to date
-            # (with dep file AND smake file), return
-            dtime = os.path.getmtime(dfile)
-            if (mtime <= dtime) and (dtime >= os.path.getmtime('smake.yaml')):
-                self.deps = deps
-                return
-
-        # Create dependency map for each sort
+    
+    # Rebuild dependencies
+    def rebuild_deps(self, dfile, sources):
+        # Create dependency map for each source
         self.deps = dict()
         for source in sources:
             self.all_deps = set()   # Temporary variable for recursion
@@ -148,6 +127,61 @@ class Build:
         # Store the dependencies to a file
         with open(dfile, 'w', encoding='utf-8') as file:
             json.dump(self.deps, file, ensure_ascii=False, indent=4)
+
+    # Build dependencies
+    def build_deps(self, sources):
+        # Dependency path
+        dfile = self.bdir + '/' + self.build + '_dependencies.json'
+
+        # Check if the file exists
+        if os.path.exists(dfile):
+            # Get file time
+            dtime = os.path.getmtime(dfile)
+            
+            # Read the JSON
+            with open(dfile) as file:
+                deps = json.load(file)
+
+            # Convert to set
+            l = []
+            for source in deps:
+                l.append(source)
+
+                # TODO: helper function
+                for dep in deps[source]:
+                    if not os.path.exists(dep):
+                        # Check time source was last modified
+                        mt = os.path.getmtime(source)
+                        if mt > dtime:
+                            # Rebuild dependencies
+                            self.rebuild_deps(dfile, sources)
+                            return
+
+                        # TODO: later, report the line in which the header is included
+                        msg = 'source file ' + source + ' includes ' + \
+                            dep + ' which does not exist'
+                        print(error('fatal error', colors.FAIL, msg))
+                        exit(-1)
+                    
+                    l.append(dep)
+
+            # Check if the dependencies file needs to be updated
+            mtime = os.path.getmtime(l[0])
+
+            for source in l:
+                assert_file(source)
+                mt = os.path.getmtime(source)
+                if mt > mtime:
+                    mtime = mt
+
+            # If the dependencies file is up to date
+            # (with dep file AND smake file), return
+            if (mtime <= dtime) and (dtime >= os.path.getmtime('smake.yaml')):
+                self.deps = deps
+                return
+        
+        # Rebuild dependencies
+        self.rebuild_deps(dfile, sources)
 
     # Build is build name
     def __init__(self, target, build, compiler, sources,
@@ -221,6 +255,11 @@ class Build:
 
     # Get most recent time from source and its dependencies
     def getmtime(self, file):
+        # Check that the file exists
+        if not os.path.exists(file):
+            print(colors.FAIL + 'Error: ' + file + ' does not exist' + colors.ENDC)
+            exit(-1)
+	
         mtime = os.path.getmtime(file)
         for dep in self.deps[file]:
             mt = os.path.getmtime(dep)
