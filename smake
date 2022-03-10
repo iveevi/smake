@@ -83,11 +83,7 @@ class Build:
     # Get header dependencies for a source
     #   which are not the standard library
     def get_deps(self, source):
-        # Check that the file exists
-        if not os.path.exists(source):
-            print(colors.FAIL + 'Error: ' + source + ' does not exist' + colors.ENDC)
-            exit(-1)
-
+        assert_file(source)
         with open(source) as file:
             lines = file.readlines()
 
@@ -255,11 +251,7 @@ class Build:
 
     # Get most recent time from source and its dependencies
     def getmtime(self, file):
-        # Check that the file exists
-        if not os.path.exists(file):
-            print(colors.FAIL + 'Error: ' + file + ' does not exist' + colors.ENDC)
-            exit(-1)
-	
+        assert_file(file)	
         mtime = os.path.getmtime(file)
         for dep in self.deps[file]:
             mt = os.path.getmtime(dep)
