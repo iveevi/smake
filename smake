@@ -354,9 +354,8 @@ class Build:
         # Check if any of the sources failed to compile
         if len(fsources) > 0:
             # Print message
-            print('\n' + colors.FAIL + 'Failed to compile the' + \
-                ' following sources,' + ' skipping linking process' + \
-                colors.ENDC)
+            msg = 'Failed to compile the following sources, skipping linking process'
+            print(error('error', colors.FAIL, msg))
 
             # Print failed sources
             for file in fsources:
@@ -370,8 +369,8 @@ class Build:
         cmd = f'{self.compiler} {compiled_str} -o {self.tpath} {self.ldirs} {self.libs} {self.rpaths}'
 
         # Print message
-        s = colors.OKBLUE + f'Linking executable {self.target}... ' + colors.ENDC
-        print(s.ljust(75), end='')
+        msg = f'Linking executable {self.target}... '
+        print(error('info', colors.OKBLUE, msg), end='')
 
         # Print command if verbose
         if verbose:
@@ -383,9 +382,8 @@ class Build:
         ret = os.system(cmd)
         if ret != 0:
             # Print message and return empty
-            print(colors.FAIL + f'Failed to link target {self.target}' + \
-                    colors.ENDC)
-
+            msg = 'Failed to link target ' + self.target
+            print(error('error', colors.FAIL, msg))
             return ''
 
         return self.tpath
@@ -449,11 +447,13 @@ class Build:
         compiled = []
         fsources = []
 
-        for obj in rets:
-            if len(obj) == 0:
-                fsources.append(obj)
+        # Check return values
+        for i in range(len(rets)):
+            # Check if compilation was successful
+            if len(rets[i]) == 0:
+                fsources.append(self.sources[i])
             else:
-                compiled.append(obj)
+                compiled.append(rets[i])
 
         # Link the objects
         return self.link(compiled, fsources, verbose)
@@ -500,12 +500,13 @@ class Target:
         # Run postbuild with target argument, if present
         if mode in self.postbuilds:
             if len(target) == 0:
-                print(colors.FAIL + '\nFailed to compile target, skipping postbuild script' + colors.ENDC)
+                msg = 'Failed to compile target, skipping postbuild script'
+                print(error('error', colors.FAIL, msg))
                 return
 
             postbuild = self.postbuilds[mode]
-            print(colors.OKBLUE + '\nSucessfully compiled target, ' + \
-                'running postbuild script\n' + colors.ENDC)
+            msg = 'Sucessfully compiled target, running postbuild script'
+            print(error('info', colors.OKBLUE, msg))
             postbuild.run(target)
 
 # Global helper functions
@@ -552,8 +553,8 @@ class Config:
         if os.path.exists('smake.yaml'):
             self.load_file('smake.yaml')
         else:
-            print(colors.FAIL + 'No smake config file (smake.yaml)' + \
-                ' in current directory' + colors.ENDC)
+            msg = 'No smake.yaml file found in current directory'
+            print(error('error', colors.FAIL, msg))
             exit(-1)
 
     # Reads definitions from variables like sources, includes, etc.
@@ -591,7 +592,8 @@ class Config:
         used = ['sources', 'idirs', 'libraries', 'ldirs', 'flags', 'compiler']
         for key in properties:
             if key not in used:
-                print(colors.WARNING + f'Section \"{key}\" in builds is not used by smake' + colors.ENDC)
+                msg = f'Section \"{key}\" in builds is not used by smake'
+                print(error('warning', colors.WARNING, msg))
 
         # Preprocess properties
         if 'sources' not in properties:
@@ -650,7 +652,8 @@ class Config:
         used = ['modes', 'builds', 'postbuilds']
         for key in properties:
             if key not in used:
-                print(colors.WARNING + f'Section {key} in targets is not used by smake' + colors.ENDC)
+                msg = f'Section \"{key}\" in targets is not used by smake'
+                print(error('warning', colors.WARNING, msg))
 
         # Preprocess properties
         modes = ['default']
@@ -724,7 +727,8 @@ class Config:
 
         for section in smake:
             if section not in used:
-                print(colors.WARNING + f'Section {section} is not used by smake' + colors.ENDC)
+                msg = f'Section \"{section}\" in smake.yaml is not used by smake'
+                print(error('warning', colors.WARNING, msg))
 
         # Load the definitions
         defns = self.load_definitions(smake)
@@ -791,7 +795,8 @@ class Config:
     def run(self, target, mode = 'default', threads = 0, verbose = False):
         # Check if targets are empty
         if len(self.targets) == 0:
-            print(colors.FAIL + 'No targets in smake' + colors.ENDC)
+            msg = 'No targets found in smake'
+            print(error('error', colors.FAIL, msg))
             exit(-1)
 
         # If the target is all, then run all targets
@@ -804,8 +809,9 @@ class Config:
         if target in self.targets:
             self.targets[target].run(mode, threads, verbose)
         else:
-            print(colors.FAIL + f'No target {target} found.' + \
-                ' Perhaps you meant one of the following:' + colors.ENDC)
+            msg = f'No target {target} found.' + \
+                ' Perhaps you meant one of the following:'
+            print(error('error', colors.FAIL, msg))
             for valid in list(self.targets.keys()):
                 print(colors.PURPLE + f'\t{valid}' + colors.ENDC)
 
