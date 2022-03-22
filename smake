@@ -2,11 +2,12 @@
 import argparse
 import copy
 import glob
+import json
 import multiprocessing
 import os
 import re
+import shutil
 import yaml
-import json
 
 # Colors
 class colors:
@@ -106,7 +107,7 @@ class Build:
         # Deep copy so that the dictionary does
         # not get modified from future dependency searches
         return copy.deepcopy(self.all_deps)
-    
+
     # Rebuild dependencies
     def rebuild_deps(self, dfile, sources):
         # Create dependency map for each source
@@ -133,7 +134,7 @@ class Build:
         if os.path.exists(dfile):
             # Get file time
             dtime = os.path.getmtime(dfile)
-            
+
             # Read the JSON
             with open(dfile) as file:
                 deps = json.load(file)
@@ -158,7 +159,7 @@ class Build:
                             dep + ' which does not exist'
                         print(error('fatal error', colors.FAIL, msg))
                         exit(-1)
-                    
+
                     l.append(dep)
 
             # Check if the dependencies file needs to be updated
@@ -175,7 +176,14 @@ class Build:
             if (mtime <= dtime) and (dtime >= os.path.getmtime('smake.yaml')):
                 self.deps = deps
                 return
-        
+
+        # Dependencies are simply not up to date
+        #   then need to delete old cache directory (self.odir)
+        if os.path.exists(self.odir):
+            shutil.rmtree(self.odir)
+
+        os.mkdir(self.odir)
+
         # Rebuild dependencies
         self.rebuild_deps(dfile, sources)
 
@@ -251,7 +259,7 @@ class Build:
 
     # Get most recent time from source and its dependencies
     def getmtime(self, file):
-        assert_file(file)	
+        assert_file(file)
         mtime = os.path.getmtime(file)
         for dep in self.deps[file]:
             mt = os.path.getmtime(dep)
@@ -642,6 +650,19 @@ class Config:
 
         return blist
 
+    # Check validity of postbuild
+    def _check_postbuild(self, name, pr, modes):
+        if type(pr) is str:
+            msg = f'in target {name}: postbuilds section expects pair "mode: script"'
+            print(error('error', colors.FAIL, msg))
+            exit(-1)
+        elif type(pr) is dict:
+            k = next(iter(pr))
+            if k not in modes:
+                msg = f'in target {name}: postbuild \"{k}\" is not a valid mode'
+                print(error('error', colors.FAIL, msg))
+                exit(-1)
+
     def load_target(self, target, blist, defns):
         name = list(target)[0]
         properties = {}
@@ -665,6 +686,8 @@ class Config:
 
         postbuilds = {}
         if 'postbuilds' in properties:
+            for pr in properties['postbuilds']:
+                self._check_postbuild(name, pr, modes)
             postbuilds = concat(properties['postbuilds'])
 
         # Preprocess predefined things
@@ -759,7 +782,7 @@ class Config:
         maxlen += 5
 
         # Header message
-        fmt = colors.OKCYAN + '{:<' + str(maxlen) + '}{}' + colors.ENDC
+        fmt = colors.BOLD + colors.OKCYAN + '{:<' + str(maxlen) + '}{}' + colors.ENDC
         print(fmt.format('Target', 'Modes'))
 
         # Print the targets
