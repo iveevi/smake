@@ -176,13 +176,13 @@ class Build:
             if (mtime <= dtime) and (dtime >= os.path.getmtime('smake.yaml')):
                 self.deps = deps
                 return
+            elif (dtime < os.path.getmtime('smake.yaml')):
+                # If dependencies are simply not up to date
+                #   then need to delete old cache directory (self.odir)
+                if os.path.exists(self.odir):
+                    shutil.rmtree(self.odir)
 
-        # Dependencies are simply not up to date
-        #   then need to delete old cache directory (self.odir)
-        if os.path.exists(self.odir):
-            shutil.rmtree(self.odir)
-
-        os.mkdir(self.odir)
+                os.mkdir(self.odir)
 
         # Rebuild dependencies
         self.rebuild_deps(dfile, sources)
@@ -683,6 +683,13 @@ class Config:
 
         # Gets builds and postbuilds
         builds = concat(properties['builds'])
+
+        # Check that all builds are valid
+        for b in builds.values():
+            if b not in blist:
+                msg = f'Build \"{b}\" in target \"{name}\" is not defined'
+                print(error('error', colors.FAIL, msg))
+                exit(-1)
 
         postbuilds = {}
         if 'postbuilds' in properties:
