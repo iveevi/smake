@@ -130,6 +130,15 @@ class Build:
         # Dependency path
         dfile = self.bdir + '/' + self.build + '_dependencies.json'
 
+        # Rebuild immediately if smake.yaml is more recent
+        #   than the dependency file
+        if os.path.exists(dfile) and (os.path.getmtime(dfile) < os.path.getmtime('smake.yaml')):
+            msg = 'rebuilding dependencies for ' + self.build + '...'
+            print(error('info', colors.OKCYAN, msg))
+            
+            # Rebuild dependencies
+            return self.rebuild_deps(dfile, sources)
+
         # Check if the file exists
         if os.path.exists(dfile):
             # Get file time
