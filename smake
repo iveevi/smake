@@ -85,8 +85,9 @@ class Build:
     #   which are not the standard library
     def get_deps(self, source):
         assert_file(source)
-        with open(source) as file:
-            lines = file.readlines()
+        with open(source, 'rb') as file:
+            content = file.read().decode('iso-8859-1')
+            lines = content.split('\n')
 
         for line in lines:
             if line.startswith('#include'):
@@ -110,6 +111,10 @@ class Build:
 
     # Rebuild dependencies
     def rebuild_deps(self, dfile, sources):
+        # Clear the directory of objects
+        for file in glob.glob(self.odir + '/*'):
+            os.remove(file)
+
         # Create dependency map for each source
         self.deps = dict()
         for source in sources:
@@ -198,7 +203,8 @@ class Build:
 
     # Build is build name
     def __init__(self, target, build, compiler, sources,
-        idirs = [], libs = [], ldirs = [], flags = []):
+            idirs = [], libs = [], ldirs = [],
+            flags = [], linkage_flags = []):
 
         # Set immediate properties
         self.target = target
@@ -252,6 +258,11 @@ class Build:
             self.flags = ' '.join(flags)
         else:
             self.flags = '-std={}'.format(self.default_standard)
+
+        # Linkage flags
+        self.linkage_flags = ''
+        if len(linkage_flags) > 0:
+            self.linkage_flags = ' '.join(linkage_flags)
 
         # Populate the directory for each source
         self.sdirs = set()
@@ -383,7 +394,7 @@ class Build:
 
         # Command generation
         compiled_str = ' '.join(compiled)
-        cmd = f'{self.compiler} {compiled_str} -o {self.tpath} {self.ldirs} {self.libs} {self.rpaths}'
+        cmd = f'{self.compiler} {self.linkage_flags} {compiled_str} -o {self.tpath} {self.ldirs} {self.libs} {self.rpaths}'
 
         # Print message
         msg = f'Linking executable {self.target}... '
@@ -606,7 +617,12 @@ class Config:
             properties.update(d)
 
         # Check unused sections
-        used = ['sources', 'idirs', 'libraries', 'ldirs', 'flags', 'compiler']
+        used = [
+            'sources', 'idirs', 'libraries',
+            'ldirs', 'flags', 'linkage_flags',
+            'compiler'
+        ]
+
         for key in properties:
             if key not in used:
                 msg = f'Section \"{key}\" in builds is not used by smake'
@@ -624,6 +640,7 @@ class Config:
         libraries = []
         ldirs = []
         flags = []
+        linkage_flags = []
         compiler = Build.default_compiler
 
         if 'idirs' in properties:
@@ -638,12 +655,15 @@ class Config:
         if 'flags' in properties:
             flags = split(properties, 'flags', defns)
 
+        if 'linkage_flags' in properties:
+            linkage_flags = split(properties, 'linkage_flags', defns)
+
         if 'compiler' in properties:
             compiler = properties['compiler']
 
         # Create and return the object
         return Build('smake-build', name, compiler, sources, includes,
-            libraries, ldirs, flags)
+            libraries, ldirs, flags, linkage_flags)
 
     def load_all_builds(self, smake, defns):
         # Check that builds actually exists
