@@ -39,8 +39,10 @@ class Script:
         self.scripts = kargs
 
     def run(self, *args):
+        str_args = ' '.join(args)
         for script in self.scripts:
-            ret = os.system(script.format(*args))
+            cmd = script.replace('{}', str_args)
+            ret = os.system(cmd)
 
             # TODO: print error
             if (ret != 0):
@@ -111,10 +113,6 @@ class Build:
 
     # Rebuild dependencies
     def rebuild_deps(self, dfile, sources):
-        # Clear the directory of objects
-        for file in glob.glob(self.odir + '/*'):
-            os.remove(file)
-
         # Create dependency map for each source
         self.deps = dict()
         for source in sources:
@@ -140,6 +138,11 @@ class Build:
         if os.path.exists(dfile) and (os.path.getmtime(dfile) < os.path.getmtime('smake.yaml')):
             msg = 'rebuilding dependencies for ' + self.build + '...'
             print(error('info', colors.OKCYAN, msg))
+        
+            # Clear the directory of objects
+            for file in glob.glob(self.odir + '/*'):
+                os.remove(file)
+
             
             # Rebuild dependencies
             return self.rebuild_deps(dfile, sources)
@@ -244,8 +247,11 @@ class Build:
         # Runtime paths
         self.rpaths = ''
         if len(ldirs) > 0:
-            self.rpaths = ' -Wl,'
-            self.rpaths += ''.join(['-rpath ' + ldir for ldir in ldirs])
+            if self.compiler == 'nvcc':
+                self.rpaths += '-Xlinker -rpath -Xlinker ' + ':'.join(ldirs)
+            else:
+                self.rpaths += ' -Wl,'
+                self.rpaths += ''.join(['-rpath ' + ldir for ldir in ldirs])
 
         # Libraries
         self.libs = ''
