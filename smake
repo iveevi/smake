@@ -520,6 +520,9 @@ class Build:
             compiled.append(ofile)
 
         # Link all the objects
+        if self.nolink:
+            return True if len(fsources) == 0 else ''
+
         return self.link(compiled, fsources, verbose)
 
     # Make lock available to processes
@@ -571,7 +574,7 @@ class Build:
 
         # Link the objects
         if self.nolink:
-            return 'OK'
+            return True if len(fsources) == 0 else ''
 
         return self.link(compiled, fsources, verbose)
 
