@@ -48,6 +48,19 @@ class Script:
             if (ret != 0):
                 exit(-1)
 
+# Make a directory
+def mkdir(dir):
+    # Need to incrementally check if each subdir exists
+    subdirs = dir.split('/')
+
+    dir = ''
+    while True:
+        dir += subdirs.pop(0) + '/'
+        if not os.path.exists(dir):
+            os.mkdir(dir)
+        if len(subdirs) == 0:
+            break
+
 # Build class
 class Build:
     cache = '.smake'
@@ -205,14 +218,17 @@ class Build:
         self.rebuild_deps(dfile, sources)
 
     # Build is build name
-    def __init__(self, target, build, compiler, sources,
+    def __init__(self, config, target, build,
+            compiler, sources, dependencies,
             idirs = [], libs = [], ldirs = [],
-            flags = [], linkage_flags = []):
+            flags = [], linkage_flags = [], options = {}):
 
         # Set immediate properties
+        self.config = config
         self.target = target
         self.build = build
         self.sources = sources
+        self.dependencies = dependencies
         self.compiler = compiler
 
         # TODO: make function for directory creation
@@ -228,6 +244,20 @@ class Build:
         self.odir = self.bdir + '/' + self.build
         if not os.path.exists(self.odir):
             os.mkdir(self.odir)
+
+        if options['output_dir'] != None:
+            mkdir(options['output_dir'])
+            self.odir = options['output_dir']
+
+        # Output object format
+        self.ofmt = None
+        if options['output_format'] != None:
+            self.ofmt = options['output_format']
+
+        # Check if the output should be linked
+        self.nolink = False
+        if options['nolink'] != None:
+            self.nolink = bool(options['nolink'])
 
         # Create target build directory
         self.tpath = self.tdir + '/' + self.target
@@ -308,7 +338,9 @@ class Build:
             ext_idx = fname.rfind('.')
             if ext_idx == -1:
                 ext_idx = len(fname)
-            ofile = self.odir + '/' + fname[:ext_idx] + '.o'
+            ofile = self.odir + '/'
+            if self.ofmt == None:
+                ofile += fname[:ext_idx] + '.o'
 
             # Generate command
             cmd = '{} {} -c -o {} {} {}'.format(self.compiler, self.flags,
@@ -343,7 +375,12 @@ class Build:
         ext_idx = fname.rfind('.')
         if ext_idx == -1:
             ext_idx = len(fname)
-        ofile = self.odir + '/' + fname[:ext_idx] + '.o'
+        ofile = self.odir + '/'
+        if self.ofmt == None:
+            ofile += fname[:ext_idx] + '.o'
+        else:
+            # TODO: replace either filename or filepath (blank means filename)
+            ofile += self.ofmt.format(fname[:ext_idx])
 
         # Check if compilation is necessary
         file_t = self.getmtime(file)
@@ -416,14 +453,46 @@ class Build:
         ret = os.system(cmd)
         if ret != 0:
             # Print message and return empty
-            msg = 'Failed to link target ' + self.target
+            msg = 'Failed to link '
+            if self.target == 'smake-tmp-build':
+                msg += 'temporary build'
+            else:
+                msg += 'target ' + self.target
+
             print(error('error', colors.FAIL, msg))
             return ''
 
         return self.tpath
 
+    # Run all dependencies
+    def run_dependencies(self, threads=1, verbose=False):
+        for name in self.dependencies:
+            build = self.config.builds[name]
+
+            ret = None
+            if threads > 1:
+                ret = build.mt_run(threads, verbose)
+            else:
+                ret = build.run(verbose)
+
+            if ret == '':
+                return name
+
+        return True
+
     # Compile all sources
     def run(self, verbose = False):
+        # First, run all dependencies
+        rd = self.run_dependencies(verbose=verbose)
+        if rd != True:
+            msg = 'Failed to run dependency ' + rd + ' for ' + self.build + ', skipping build'
+            print(error('error', colors.FAIL, msg))
+            return ''
+
+        # Message that this build is running
+        msg = f'Building {self.target}...'
+        print('\n' + error('info', colors.OKBLUE, msg))
+
         # List of compiled files
         compiled = []
 
@@ -460,6 +529,17 @@ class Build:
 
     # Compile multithreaded
     def mt_run(self, threads, verbose = False):
+        # First, run all dependencies
+        rd = self.run_dependencies(threads=threads, verbose=verbose)
+        if rd != True:
+            msg = 'Failed to run dependency ' + rd + ' for ' + self.build + ', skipping build'
+            print(error('error', colors.FAIL, msg))
+            return ''
+        
+        # Message that this build is running
+        msg = f'Building {self.target}... '
+        print('\n' + error('info', colors.OKBLUE, msg))
+
         # Interprocess lock
         lock = multiprocessing.Lock()
 
@@ -490,6 +570,9 @@ class Build:
                 compiled.append(rets[i])
 
         # Link the objects
+        if self.nolink:
+            return 'OK'
+
         return self.link(compiled, fsources, verbose)
 
 # Target class
@@ -577,6 +660,9 @@ def concat(ldicts):
 class Config:
     # Constructor takes no argument
     def __init__(self):
+        # Initialize builds to empty
+        self.builds = {}
+
         # Initialize targets to empty
         self.targets = {}
 
@@ -626,7 +712,7 @@ class Config:
         used = [
             'sources', 'idirs', 'libraries',
             'ldirs', 'flags', 'linkage_flags',
-            'compiler'
+            'compiler', 'dependencies', 'options'
         ]
 
         for key in properties:
@@ -636,7 +722,7 @@ class Config:
 
         # Preprocess properties
         if 'sources' not in properties:
-            print(colors.FAIL + f'Build \"{name}\" has no listed sources' + colors.ENDC)
+            print(error('error', colors.FAIL, f'No sources specified for build \"{name}\"'))
             exit(-1)
 
         sources = split(properties, 'sources', defns)
@@ -648,7 +734,14 @@ class Config:
         flags = []
         linkage_flags = []
         compiler = Build.default_compiler
+        dependencies = []
+        options = {
+            'nolink': False,
+            'output_dir': None,
+            'output_format': None
+        }
 
+        # TODO: map for these to their handlers?
         if 'idirs' in properties:
             includes = split(properties, 'idirs', defns)
 
@@ -667,9 +760,29 @@ class Config:
         if 'compiler' in properties:
             compiler = properties['compiler']
 
+        if 'dependencies' in properties:
+            dependencies = split(properties, 'dependencies', defns)
+
+        if 'options' in properties:
+            options_str = properties['options']
+
+            options_list = options_str.split(',')
+            for opt in options_list:
+                # Strip whitespace (leading and trailing)
+                opt = opt.strip()
+                if opt == 'nolink':
+                    options['nolink'] = True
+
+                opt = opt.split('=')
+                if opt[0] == 'output_dir':
+                    options['output_dir'] = opt[1]
+
+                if opt[0] == 'output_format':
+                    options['output_format'] = opt[1]
+
         # Create and return the object
-        return Build('smake-build', name, compiler, sources, includes,
-            libraries, ldirs, flags, linkage_flags)
+        return Build(self, 'smake-tmp-build', name, compiler, sources, dependencies,
+            includes, libraries, ldirs, flags, linkage_flags, options)
 
     def load_all_builds(self, smake, defns):
         # Check that builds actually exists
@@ -799,10 +912,10 @@ class Config:
         defns = self.load_definitions(smake)
 
         # Load all builds
-        builds = self.load_all_builds(smake, defns)
+        self.builds = self.load_all_builds(smake, defns)
 
         # Load all targets
-        self.targets = self.load_all_targets(smake, builds, defns)
+        self.targets = self.load_all_targets(smake, self.builds, defns)
 
         # Load all installs
         self.installs = self.load_all_installs(smake, defns)
@@ -884,7 +997,8 @@ class Config:
     def install(self, target):
         # Check presence of install target
         if target not in self.installs:
-            print(colors.FAIL + f'No target \"{target}\" in installs section' + colors.ENDC)
+            msg = f'No install target {target} in installs section'
+            print(error('error', colors.FAIL, msg))
             exit(-1)
 
         # Get the script and execute it
@@ -909,10 +1023,18 @@ if __name__ == '__main__':
     parser.add_argument('-v', '--verbose', help = 'Verbose mode', action = 'store_true')
     parser.add_argument('-I', '--install', help = 'Install target', action = 'store_true')
 
+    # TODO: quiet version, which shows currently compiling thing (live progress
+    # bar/ percentage)
+    # TODO: option for no eexecutable (mulitple cmpiled, no exec)
+    # TODO: custom smakefile type file (parse into a dictionary, compare with
+    # pyyaml output)
+
     # Read the arguments
     args = parser.parse_args()
 
     # No need to read config for this
+    # TODO: remove all built objects, since they are not guaranteed to all be in
+    # .smake --> will need to read config
     if args.clear_cache:
         os.system('rm -rf .smake')
         exit(0)
