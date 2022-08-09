@@ -8,23 +8,39 @@ import os
 import re
 import shutil
 import yaml
+import platform
+
+from colorama import Fore, Style, init
+
+# Initialize colorama
+init()
 
 # Colors
 class colors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-    PURPLE = '\033[95m'
+    if platform.system() == 'Windows':
+        OKBLUE = Fore.BLUE
+        OKCYAN = Fore.CYAN
+        OKGREEN = Fore.GREEN
+        WARNING = Fore.YELLOW
+        FAIL = Fore.RED
+        RESET = Style.RESET_ALL
+        BOLD = Style.BRIGHT
+        UNDERLINE = Style.UNDERLINE
+        PURPLE = Fore.MAGENTA
+    else:
+        OKBLUE = '\033[94m'
+        OKCYAN = '\033[96m'
+        OKGREEN = '\033[92m'
+        WARNING = '\033[93m'
+        FAIL = '\033[91m'
+        RESET = '\033[0m'
+        BOLD = '\033[1m'
+        UNDERLINE = '\033[4m'
+        PURPLE = '\033[95m'
 
 # Generate error message
 def error(type, color, message):
-    return colors.BOLD + 'smake: ' + color + type + ': ' + colors.ENDC + message
+    return colors.BOLD + 'smake: ' + color + type + ': ' + colors.RESET + message
 
 # Assert that a file exists
 def assert_file(file_path):
@@ -60,6 +76,27 @@ def mkdir(dir):
             os.mkdir(dir)
         if len(subdirs) == 0:
             break
+
+def make_ofile(file, ofmt):
+    # Get extension index
+    ext_idx = file.rfind('.')
+    if ext_idx == -1:
+        ext_idx = len(file)
+
+    if ofmt == None:
+        # Get file name without directory
+        return file[:ext_idx].replace('/', '_') + '.o'
+
+    # Get plain filename
+    dir_idx = file.rfind('/')
+    filename = file[dir_idx + 1:ext_idx]
+
+    # Replace fixed groups
+    s = ofmt.replace('{}', file.replace('/', '_')) \
+        .replace('{filename}', filename) \
+        .replace('{dirname}', file[:dir_idx])
+
+    return s
 
 # Build class
 class Build:
@@ -151,12 +188,12 @@ class Build:
         if os.path.exists(dfile) and (os.path.getmtime(dfile) < os.path.getmtime('smake.yaml')):
             msg = 'rebuilding dependencies for ' + self.build + '...'
             print(error('info', colors.OKCYAN, msg))
-        
+
             # Clear the directory of objects
             for file in glob.glob(self.odir + '/*'):
                 os.remove(file)
 
-            
+
             # Rebuild dependencies
             return self.rebuild_deps(dfile, sources)
 
@@ -330,17 +367,7 @@ class Build:
 
         # Iterate through all the sources
         for file in self.sources:
-            # Get file name without directory
-            fname = os.path.basename(file)
-
-            # Create the output file
-			#	get extension index
-            ext_idx = fname.rfind('.')
-            if ext_idx == -1:
-                ext_idx = len(fname)
-            ofile = self.odir + '/'
-            if self.ofmt == None:
-                ofile += fname[:ext_idx] + '.o'
+            ofile = self.odir + '/' + make_ofile(file, self.ofmt)
 
             # Generate command
             cmd = '{} {} -c -o {} {} {}'.format(self.compiler, self.flags,
@@ -364,23 +391,10 @@ class Build:
 
         # Check if file exists
         if not os.path.exists(file):
-            print(colors.FAIL + f'\tFile {file} does not exist' + colors.ENDC)
+            print(colors.FAIL + f'\tFile {file} does not exist' + colors.RESET)
             return ''
 
-        # Get file name without directory
-        fname = file.replace('/', '_')
-
-        # Create the output file
-        #	get extension index
-        ext_idx = fname.rfind('.')
-        if ext_idx == -1:
-            ext_idx = len(fname)
-        ofile = self.odir + '/'
-        if self.ofmt == None:
-            ofile += fname[:ext_idx] + '.o'
-        else:
-            # TODO: replace either filename or filepath (blank means filename)
-            ofile += self.ofmt.format(fname[:ext_idx])
+        ofile = self.odir + '/' + make_ofile(file, self.ofmt)
 
         # Check if compilation is necessary
         file_t = self.getmtime(file)
@@ -388,7 +402,7 @@ class Build:
         if os.path.exists(ofile):
             ofile_t = os.path.getmtime(ofile)
             if ofile_t > file_t:
-                print(colors.OKCYAN + 'Source already compiled' + colors.ENDC)
+                print(colors.OKCYAN + 'Source already compiled' + colors.RESET)
 
                 # Unlock if available
                 if lock_avaiable:
@@ -402,7 +416,7 @@ class Build:
 
         # Print command if verbose
         if verbose:
-            print(colors.PURPLE + cmd + colors.ENDC)
+            print(colors.PURPLE + cmd + colors.RESET)
         else:
             print()
 
@@ -430,7 +444,7 @@ class Build:
 
             # Print failed sources
             for file in fsources:
-                print(colors.PURPLE + '\t' + file + colors.ENDC)
+                print(colors.PURPLE + '\t' + file + colors.RESET)
 
             # Return empty for failure
             return ''
@@ -445,7 +459,7 @@ class Build:
 
         # Print command if verbose
         if verbose:
-            print(colors.PURPLE + cmd + colors.ENDC)
+            print(colors.PURPLE + cmd + colors.RESET)
         else:
             print()
 
@@ -502,7 +516,7 @@ class Build:
         # Generate format string
         slen = str(len(self.sources))
         fstr = colors.OKCYAN + '[{:>' + str(len(slen)) + '}/' + slen + '] ' \
-            + colors.OKGREEN + 'Compiling {}... ' + colors.ENDC
+            + colors.OKGREEN + 'Compiling {}... ' + colors.RESET
 
         # Compile the sources
         for i in range(len(self.sources)):
@@ -538,7 +552,7 @@ class Build:
             msg = 'Failed to run dependency ' + rd + ' for ' + self.build + ', skipping build'
             print(error('error', colors.FAIL, msg))
             return ''
-        
+
         # Message that this build is running
         msg = f'Building {self.target}... '
         print('\n' + error('info', colors.OKBLUE, msg))
@@ -549,7 +563,7 @@ class Build:
         # Generate format string
         slen = str(len(self.sources))
         fstr = colors.OKCYAN + '[{:>' + str(len(slen)) + '}/' + slen + '] ' \
-            + colors.OKGREEN + 'Compiling {}... ' + colors.ENDC
+            + colors.OKGREEN + 'Compiling {}... ' + colors.RESET
 
         # Create the arguments
         args = []
@@ -606,7 +620,7 @@ class Target:
 
         # Retrieve run attributes
         if not (mode in self.modes):
-            print(colors.FAIL + f'{mode} is not a valid build for target {self.name}' + colors.ENDC)
+            print(colors.FAIL + f'{mode} is not a valid build for target {self.name}' + colors.RESET)
             exit(-1)
 
         build = self.builds[mode]
@@ -784,13 +798,13 @@ class Config:
                     options['output_format'] = opt[1]
 
         # Create and return the object
-        return Build(self, 'smake-tmp-build', name, compiler, sources, dependencies,
+        return Build(self, 'tmp_build_' + name, name, compiler, sources, dependencies,
             includes, libraries, ldirs, flags, linkage_flags, options)
 
     def load_all_builds(self, smake, defns):
         # Check that builds actually exists
         if 'builds' not in smake:
-            print(colors.FAIL + 'No builds defined in smake.yaml' + colors.ENDC)
+            print(colors.FAIL + 'No builds defined in smake.yaml' + colors.RESET)
             exit(-1)
 
         blist = {}
@@ -872,7 +886,7 @@ class Config:
     def load_all_targets(self, smake, builds, defns):
         # Check that targets exist
         if 'targets' not in smake:
-            print(colors.FAIL + 'No targets specified in smake.yaml' + colors.ENDC)
+            print(colors.FAIL + 'No targets specified in smake.yaml' + colors.RESET)
             exit(-1)
 
         tlist = {}
@@ -927,7 +941,7 @@ class Config:
     def list_targets(self):
         # Return if no targets
         if len(self.targets) == 0:
-            print(colors.FAIL + 'No targets found' + colors.ENDC)
+            print(colors.FAIL + 'No targets found' + colors.RESET)
             exit(-1)
 
         # Max string length of target name
@@ -940,7 +954,7 @@ class Config:
         maxlen += 5
 
         # Header message
-        fmt = colors.BOLD + colors.OKCYAN + '{:<' + str(maxlen) + '}{}' + colors.ENDC
+        fmt = colors.BOLD + colors.OKCYAN + '{:<' + str(maxlen) + '}{}' + colors.RESET
         print(fmt.format('Target', 'Modes'))
 
         # Print the targets
@@ -953,7 +967,7 @@ class Config:
                     modes += ', '
 
             fmt = colors.OKBLUE + '{:<' + str(maxlen) + '}' + \
-                colors.PURPLE + '{}' + colors.ENDC
+                colors.PURPLE + '{}' + colors.RESET
             print(fmt.format(t, modes))
 
     # Generate compile_commands.json
@@ -994,7 +1008,7 @@ class Config:
                 ' Perhaps you meant one of the following:'
             print(error('error', colors.FAIL, msg))
             for valid in list(self.targets.keys()):
-                print(colors.PURPLE + f'\t{valid}' + colors.ENDC)
+                print(colors.PURPLE + f'\t{valid}' + colors.RESET)
 
     # Run installation for a target
     def install(self, target):

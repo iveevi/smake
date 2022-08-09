@@ -15,7 +15,7 @@ setuptools.setup(
         long_description_content_type = "text/markdown",
         url = "https://github.com/vedavamadathil/smake",
         packages = setuptools.find_packages(),
-        instal_requires = ['pyyaml'],
+        instal_requires = ['pyyaml', 'colorama'],
         classifiers = [
                 "Programming Language :: Python :: 3",
                 "License :: OSI Approved :: MIT License",
