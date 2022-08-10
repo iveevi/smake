@@ -25,7 +25,7 @@ class colors:
         FAIL = Fore.RED
         RESET = Style.RESET_ALL
         BOLD = Style.BRIGHT
-        UNDERLINE = Style.UNDERLINE
+        UNDERLINE = ''
         PURPLE = Fore.MAGENTA
     else:
         OKBLUE = '\033[94m'
