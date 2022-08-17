@@ -326,11 +326,9 @@ class Build:
             self.libs = ''.join([lib if (lib[0] == '-') else (' -l' + lib) for lib in libs])
 
         # Flags
-        self.flags = ''
-        if len(flags) > 0:
-            self.flags = ' '.join(flags)
-        else:
-            self.flags = '-std={}'.format(self.default_standard)
+        self.flags = flags
+        if len(flags) == 0:
+            self.flags = {'default' : ['-std={}'.format(self.default_standard)]}
 
         # Linkage flags
         self.linkage_flags = ''
@@ -344,6 +342,17 @@ class Build:
 
         # Build dependencies
         self.build_deps(sources)
+
+    # Compile all the flags together
+    def compile_flags(self, source):
+        # Get flags
+        flags = self.flags['default'] if 'default' in self.flags else ''
+        if source in self.flags:
+            flags = self.flags[source]
+
+        flags = ' '.join(flags)
+
+        return flags
 
     # Update target name
     def set_target(self, target):
@@ -370,7 +379,9 @@ class Build:
             ofile = self.odir + '/' + make_ofile(file, self.ofmt)
 
             # Generate command
-            cmd = '{} {} -c -o {} {} {}'.format(self.compiler, self.flags,
+            flags = self.compile_flags(file)
+
+            cmd = '{} {} -c -o {} {} {}'.format(self.compiler, flags,
                     ofile, file, self.idirs)
 
             ret += '{{\n  "directory": "{}",\n  "command": "{}",\n  "file": "{}"\n}},\n'.format(
@@ -411,7 +422,9 @@ class Build:
                 return ofile
 
         # Compile the source
-        cmd = '{} {} -c -o {} {} {}'.format(self.compiler, self.flags,
+        flags = self.compile_flags(file)
+        
+        cmd = '{} {} -c -o {} {} {}'.format(self.compiler, flags,
                 ofile, file, self.idirs)
 
         # Print command if verbose
@@ -748,7 +761,7 @@ class Config:
         includes = []
         libraries = []
         ldirs = []
-        flags = []
+        flags = {}
         linkage_flags = []
         compiler = Build.default_compiler
         dependencies = []
@@ -769,7 +782,14 @@ class Config:
             ldirs = split(properties, 'ldirs', defns)
 
         if 'flags' in properties:
-            flags = split(properties, 'flags', defns)
+            f = properties['flags']
+            if type(f) == str:
+                flags = {'default' : split_plain(properties['flags'])}
+            elif type(f) == list:
+                for d in f:
+                    k = list(d)[0]
+                    v = split_plain(d[k])
+                    flags.update({k : v})
 
         if 'linkage_flags' in properties:
             linkage_flags = split(properties, 'linkage_flags', defns)
