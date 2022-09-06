@@ -153,6 +153,7 @@ class Build:
                 elif ht2:
                     header = self.get_header(source, ht2.group(1))
 
+                # TODO: improve dependency checking
                 if header and header not in self.all_deps:
                     self.all_deps.add(header)
                     self.get_deps(header)
@@ -190,6 +191,7 @@ class Build:
             print(error('info', colors.OKCYAN, msg))
 
             # Clear the directory of objects
+            assert(self.odir != '.')
             for file in glob.glob(self.odir + '/*'):
                 os.remove(file)
 
@@ -286,6 +288,10 @@ class Build:
             mkdir(options['output_dir'])
             self.odir = options['output_dir']
 
+        # Check if the target name should be overridden
+        if options['target_name'] != None:
+            self.target = options['target_name']
+
         # Output object format
         self.ofmt = None
         if options['output_format'] != None:
@@ -296,10 +302,19 @@ class Build:
         if options['nolink'] != None:
             self.nolink = bool(options['nolink'])
 
+        # Check if the output is a dynamic library
+        self.dynamic = False
+        if options['dll'] != None:
+            self.dynamic = bool(options['dll'])
+
         # Create target build directory
-        self.tpath = self.tdir + '/' + self.target
-        if not os.path.exists(self.tdir):
-            os.mkdir(self.tdir)
+        # TODO: allow separate build and output dir...
+        if options['output_dir'] == None:
+            self.tpath = self.tdir + '/' + self.target
+            if not os.path.exists(self.tdir):
+                os.mkdir(self.tdir)
+        else:
+            self.tpath = options['output_dir'] + '/' + self.target
 
         # Includes
         self.idirs = ''
@@ -464,7 +479,12 @@ class Build:
 
         # Command generation
         compiled_str = ' '.join(compiled)
-        cmd = f'{self.compiler} {self.linkage_flags} {compiled_str} -o {self.tpath} {self.ldirs} {self.libs} {self.rpaths}'
+
+        flags = self.linkage_flags
+        if self.dynamic:
+            flags += ' -shared'
+
+        cmd = f'{self.compiler} {flags} {compiled_str} -o {self.tpath} {self.ldirs} {self.libs} {self.rpaths}'
 
         # Print message
         msg = f'Linking executable {self.target}... '
@@ -633,7 +653,8 @@ class Target:
 
         # Retrieve run attributes
         if not (mode in self.modes):
-            print(colors.FAIL + f'{mode} is not a valid build for target {self.name}' + colors.RESET)
+            msg = f'Invalid mode {mode} for target {self.name}'
+            print(error('error', colors.FAIL, msg))
             exit(-1)
 
         build = self.builds[mode]
@@ -766,9 +787,11 @@ class Config:
         compiler = Build.default_compiler
         dependencies = []
         options = {
+            'dll': False,
             'nolink': False,
             'output_dir': None,
-            'output_format': None
+            'output_format': None,
+            'target_name': None
         }
 
         # TODO: map for these to their handlers?
@@ -807,7 +830,9 @@ class Config:
             for opt in options_list:
                 # Strip whitespace (leading and trailing)
                 opt = opt.strip()
-                if opt == 'nolink':
+                if opt == 'dll':
+                    options['dll'] = True
+                elif opt == 'nolink':
                     options['nolink'] = True
 
                 opt = opt.split('=')
@@ -816,6 +841,9 @@ class Config:
 
                 if opt[0] == 'output_format':
                     options['output_format'] = opt[1]
+
+                if opt[0] == 'target_name':
+                    options['target_name'] = opt[1]
 
         # Create and return the object
         return Build(self, 'tmp_build_' + name, name, compiler, sources, dependencies,
