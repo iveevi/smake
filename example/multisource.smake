@@ -1,0 +1,28 @@
+multisource = target(multisource)
+
+sources = 'multisource/*'
+
+build_default = build()
+
+build_default.add_sources('sources')
+build_default.add_libraries('pthread')
+build_default.set_flags('-std=c++11')
+
+build_debug = build_debug.clone()
+build_debug.add_flags(-g)
+
+multisource.add_builds(
+	basic_default,
+	gdb: multisource_debug,
+	lldb: multisource_debug
+)
+
+multisource.set_post_build(
+	gdb: 'gdb $SMAKE_TARGET',
+	lldb : 'lldb $SMAKE_TARGET'
+)
+
+multisource.on_install(
+	'echo Installing multisource...',
+	'echo Done installing.'
+)

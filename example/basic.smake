@@ -1,0 +1,7 @@
+basic = target(basic)
+
+build = basic.build()
+build.add_sources('basic/main.cpp')
+
+basic.add_build(basic)
+basic.on_install('echo Installing basic...')
