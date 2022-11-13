@@ -1,10 +1,10 @@
 multisource = target('multisource')
 
-sources = 'multisource/*'
+sources = 'multisource/*.cpp'
 
 build_default = multisource.new_build()
 
-build_default.add_sources('sources')
+build_default.add_sources(sources)
 build_default.add_libraries('pthread')
 build_default.set_flags('-std=c++11')
 

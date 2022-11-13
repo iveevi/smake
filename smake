@@ -1,19 +1,21 @@
 #!/usr/bin/env python
-import argparse
 import copy
-import glob
-import json
-import multiprocessing
+import difflib
+import inspect
 import os
-import re
-import shutil
-import yaml
+import pathlib
 import platform
+import colorama
 
-from colorama import Fore, Style, init
+from colorama import Fore, Style
+from dataclasses import dataclass
+from enum import Enum
+from pyparsing import Literal, Forward, QuotedString, \
+    Word, ZeroOrMore, alphas, alphanums, delimitedList, \
+    Empty, OneOrMore, Optional
 
 # Initialize colorama
-init()
+colorama.init()
 
 # Colors
 class colors:
@@ -44,22 +46,6 @@ def assert_file(file_path):
         msg = 'file ' + file_path + ' does not exist'
         print(message('fatal error', colors.FAIL, msg))
         exit(-1)
-
-# Read all .smake files from this directory or any subdirectory
-smake_files = []
-for root, dirs, files in os.walk('.'):
-    path = root.split(os.sep)
-    for file in files:
-        if file.endswith('.smake'):
-            smake_file = os.path.join(root, file)
-            smake_files.append(smake_file)
-
-print(smake_files)
-
-# Parsing
-from pyparsing import *
-from enum import Enum
-from dataclasses import dataclass
 
 # TODO: use a function to generate auto ordered enum
 class TokenType(Enum):
@@ -98,36 +84,6 @@ class Token:
             + '[' + str(self.loc) + ', ' \
             + str(self.end) + ']' + '}'
 
-
-lparen = Literal('(')
-lparen.setParseAction(lambda loc, _: Token(TokenType.INVOKE_START, loc, loc + 1))
-
-rparen = Literal(')')
-rparen.setParseAction(lambda loc, _: Token(TokenType.INVOKE_END, loc, loc + 1))
-
-equals = Literal('=')
-equals.setParseAction(lambda loc, _: Token(TokenType.EQUALS, loc, loc + 1))
-
-colon = Literal(':')
-colon.setParseAction(lambda loc, _: Token(TokenType.COLON, loc, loc + 1))
-
-dot = Literal('.')
-dot.setParseAction(lambda loc, _: Token(TokenType.DOT, loc, loc + 1))
-
-# Forward declare terms
-term = Forward()
-
-double_string = QuotedString('"', escChar='\\')
-single_string = QuotedString("'", escChar='\\')
-string = double_string | single_string
-string.setParseAction(lambda loc, t: Token(TokenType.STRING, loc, loc + len(t[0]) + 2, t[0]))
-
-primitive = string
-
-# Recursive identifier (i.e. a.b.c)
-identifier = Word(alphas + '_', alphanums + '_')
-identifier.setParseAction(lambda loc, t: Token(TokenType.IDENTIFIER, loc, loc + len(t[0]), t[0]))
-
 def compress_identifiers(loc, tokens):
     end = loc
 
@@ -141,13 +97,6 @@ def compress_identifiers(loc, tokens):
 
     return Token(TokenType.FULL_IDENTIFIER, loc, end, compressed)
 
-full_identifier = ZeroOrMore(identifier + dot) + identifier
-full_identifier.setParseAction(compress_identifiers)
-
-# Key value pair (i.e. a: b)
-key_value_pair = primitive + colon + term
-key_value_pair.setParseAction(lambda loc, t: Token(TokenType.KEY_VALUE, loc, t[-1].end, (t[0], t[2])))
-
 def compress_args(loc, tokens):
     end = loc
 
@@ -159,9 +108,6 @@ def compress_args(loc, tokens):
         compressed.append(t.value)
 
     return Token(TokenType.ARGS, loc, end, compressed)
-
-args = delimitedList(term) | Empty()
-args.setParseAction(compress_args)
 
 def compress_invocation(loc, tokens):
     end = loc
@@ -177,23 +123,65 @@ def compress_invocation(loc, tokens):
     
     return Token(TokenType.INVOKE, loc, end, compressed)
 
-invocation = full_identifier + lparen + args + rparen
-invocation.setParseAction(compress_invocation)
+def generate_grammar():
+    lparen = Literal('(')
+    lparen.setParseAction(lambda loc, _: Token(TokenType.INVOKE_START, loc, loc + 1))
 
-term <<= (key_value_pair | invocation | full_identifier | string)
-term.setParseAction(lambda loc, t: Token(TokenType.TERM, loc, t[0].end, t[0]))
+    rparen = Literal(')')
+    rparen.setParseAction(lambda loc, _: Token(TokenType.INVOKE_END, loc, loc + 1))
 
-expression = term.copy()
-expression.setParseAction(lambda loc, t: Token(TokenType.EXPRESSION, loc, t[0].end, t))
+    equals = Literal('=')
+    equals.setParseAction(lambda loc, _: Token(TokenType.EQUALS, loc, loc + 1))
 
-assignment = identifier + equals + expression
-assignment.setParseAction(lambda loc, t: Token(TokenType.ASSIGNMENT, loc, t[-1].end, t))
+    colon = Literal(':')
+    colon.setParseAction(lambda loc, _: Token(TokenType.COLON, loc, loc + 1))
 
-statement = assignment | expression
-statement.setParseAction(lambda loc, t: Token(TokenType.STATEMENT, loc, t[0].end, t))
+    dot = Literal('.')
+    dot.setParseAction(lambda loc, _: Token(TokenType.DOT, loc, loc + 1))
 
-smake_file = OneOrMore(statement)
-smake_file.parseWithTabs()
+    # Forward declare terms
+    term = Forward()
+
+    double_string = QuotedString('"', escChar='\\')
+    single_string = QuotedString("'", escChar='\\')
+    string = double_string | single_string
+    string.setParseAction(lambda loc, t: Token(TokenType.STRING, loc, loc + len(t[0]) + 2, t[0]))
+
+    primitive = string
+
+    # Recursive identifier (i.e. a.b.c)
+    identifier = Word(alphas + '_', alphanums + '_')
+    identifier.setParseAction(lambda loc, t: Token(TokenType.IDENTIFIER, loc, loc + len(t[0]), t[0]))
+
+    full_identifier = ZeroOrMore(identifier + dot) + identifier
+    full_identifier.setParseAction(compress_identifiers)
+
+    # Key value pair (i.e. a: b)
+    key_value_pair = primitive + colon + term
+    key_value_pair.setParseAction(lambda loc, t: Token(TokenType.KEY_VALUE, loc, t[-1].end, (t[0], t[2])))
+
+    args = delimitedList(term) | Empty()
+    args.setParseAction(compress_args)
+
+    invocation = full_identifier + lparen + args + rparen
+    invocation.setParseAction(compress_invocation)
+
+    term <<= (key_value_pair | invocation | full_identifier | string)
+    term.setParseAction(lambda loc, t: Token(TokenType.TERM, loc, t[0].end, t[0]))
+
+    expression = term.copy()
+    expression.setParseAction(lambda loc, t: Token(TokenType.EXPRESSION, loc, t[0].end, t))
+
+    assignment = identifier + equals + expression
+    assignment.setParseAction(lambda loc, t: Token(TokenType.ASSIGNMENT, loc, t[-1].end, t))
+
+    statement = assignment | expression
+    statement.setParseAction(lambda loc, t: Token(TokenType.STATEMENT, loc, t[0].end, t))
+
+    smake_file = OneOrMore(statement)
+    smake_file.parseWithTabs()
+
+    return smake_file
 
 # Error exceptions
 class InvalidInput(Exception):
@@ -205,42 +193,52 @@ class InvalidInput(Exception):
 
 # Build and Target structures
 class Build:
-    def __init__(self, target):
+    DEFAULT_COMPILER = 'gcc'
+
+    def __init__(self, target, path):
         self.target = target
+        self.path = path
         self.sources = []
+        self.includes = []
         self.libraries = []
         self.flags = ''
+        self.compiler = Build.DEFAULT_COMPILER
+
+        # Fields to be filled by program
+        self._cc_includes = None
+        self._cc_depenedencies = None
+        self._cc_sources = None
 
     def add_sources(self, *sources):
-        print('adding sources: ' + str(sources))
         self.sources.extend(sources)
 
+    def add_includes(self, *includes):
+        self.includes.extend(includes)
+
     def add_libraries(self, *libraries):
-        print('adding libraries: ' + str(libraries))
         self.libraries.extend(libraries)
 
     def set_flags(self, flags):
-        print('setting flags: ' + flags)
         self.flags = flags
 
     def add_flags(self, flags):
-        print('adding flags: ' + flags)
         self.flags += ' ' + flags
 
     def clone(self):
         return copy.deepcopy(self)
 
 class Target:
-    def __init__(self, name):
+    def __init__(self, name, path):
         self.name = name
+        self.path = path
         self.builds = {}
+
         # TODO: multiple post-builds and install scripts..
-        # Script class?
         self.post_builds = {}
         self.install_scripts = []
 
     def new_build(self):
-        return Build(self)
+        return Build(self, self.path)
 
     def add_build(self, build):
         mode = 'default'
@@ -286,7 +284,6 @@ class Target:
 
     def on_install(self, *scripts):
         self.install_scripts.extend(scripts)
-        print('adding install script(s):', scripts)
 
 # All target across every smake file
 targets = {}
@@ -335,9 +332,6 @@ def error_at(ectx, col, length, msg, until=-1):
 
 def extent(token):
     return token.end - token.loc
-
-import difflib
-import inspect
 
 def evaluate_token(ectx, variables, stack, token):
     # TODO: map instead of if/else
@@ -391,7 +385,6 @@ def evaluate_token(ectx, variables, stack, token):
         
         has_varargs = ftn.__code__.co_flags & inspect.CO_VARARGS
 
-        print('calling ' + str(ftn) + ' with ' + str(args) + ' (expected ' + str(expected) + ')')
         if len(args) != expected and not has_varargs:
             message = 'expected ' + str(expected) + ' arguments, got ' + str(len(args))
             error_at(ectx, sig[0].loc, extent(sig[0]), message, until=token.end)
@@ -399,12 +392,9 @@ def evaluate_token(ectx, variables, stack, token):
         try:
             return ftn(*args)
         except InvalidInput as e:
-            print('error', ectx.linelist)
             error_at(ectx, sig[0].loc, extent(sig[0]), e.message, until=token.end)
     else:
         message_str = 'unexpected token ' + token.type.name
-        print('error on token:', token)
-        print(ectx.linelist)
         error_at(ectx, token.loc, extent(token), message_str)
 
 def evaluate_expression(ectx, variables, tokens):
@@ -423,18 +413,7 @@ def evaluate_expression(ectx, variables, tokens):
 
     return stack.pop()
 
-def evaluate_file(path):
-    # All variables in a single evaluation context
-    variables = {
-            'target': lambda name: Target(name)
-    }
-
-    # Open the file
-    file = open(path, 'r')
-    content = file.read()
-
-    parsed = smake_file.parseString(content, parseAll=True)
-
+def make_error_context(path, content):
     linelist = []
 
     chars = 0
@@ -444,15 +423,24 @@ def evaluate_file(path):
         chars += 1
     
     linelist.append(chars)
-
-    print(linelist)
-
     lines = content.splitlines()
+    
+    return ErrorContext(path, lines, linelist)
 
-    ectx = ErrorContext(path, lines, linelist)
+def evaluate_file(grammar, path):
+    # All variables in a single evaluation context
+    variables = {
+            'target': lambda name: Target(name, path)
+    }
+
+    # Open the file
+    file = open(path, 'r')
+    content = file.read()
+
+    parsed = grammar.parseString(content, parseAll=True)
+    ectx = make_error_context(path, content)
 
     for statement in parsed:
-        print(statement)
         ttype = statement.type
 
         assert ttype == TokenType.STATEMENT, 'invalid statement'
@@ -474,14 +462,10 @@ def evaluate_file(path):
             assert expression.type == TokenType.EXPRESSION, 'invalid expression'
 
             expression_value = evaluate_expression(ectx, variables, expression.value)
-
-            print('assignment:', identifier.value, expression.value)
-
             variables[identifier.value] = expression_value
         else:
             expression = statement.value
-            print('expression:', expression)
-            print('\tevaluates to:', evaluate_expression(ectx, variables, expression))
+            evaluate_expression(ectx, variables, expression)
 
     # After evaluating a single context, merge all targets
     for var in variables:
@@ -489,10 +473,151 @@ def evaluate_file(path):
             # TODO: should we always overwrite?
             targets[var] = variables[var]
 
-# evaluate_file(smake_files[1])
-evaluate_file(smake_files[0])
+# Read all .smake files from this directory or any subdirectory
+smake_files = []
+for root, dirs, files in os.walk('.'):
+    path = root.split(os.sep)
+    for file in files:
+        if file.endswith('.smake'):
+            smake_file = os.path.join(root, file)
+            smake_files.append(smake_file)
 
-for target in targets:
-    print('target:', target)
-    print('builds:', targets[target].builds)
-    print('install scripts:', targets[target].install_scripts)
+grammar = generate_grammar()
+for smake_file in smake_files:
+    evaluate_file(grammar, smake_file)
+
+def list_targets(targets):
+    # Return if no targets
+    if len(targets) == 0:
+        return
+
+    # Compute padding
+    maxlen = 0
+    for target in targets:
+        if len(target) > maxlen:
+            maxlen = len(target)
+
+    maxlen += 5
+
+    # Header message
+    fmt = colors.BOLD + colors.OKCYAN + '{:<' + str(maxlen) + '}' \
+        + colors.OKBLUE + '{}' + colors.RESET
+
+    print(fmt.format('Target', 'Build modes'))
+
+    # Print the targets
+    for name in targets:
+        target = targets[name]
+
+        modes = list(target.builds.keys())
+        modes = ', '.join(modes)
+
+        fmt = colors.OKCYAN + '{:<' + str(maxlen) + '}' + \
+            colors.OKBLUE + '{}' + colors.RESET
+        print(fmt.format(target.name, modes))
+
+list_targets(targets)
+
+# TODO: error if no smake files found
+import subprocess
+
+# Preprocess a particular build configuration
+def preprocess_build(build):
+    print('Preprocessing build for target: ' + build.target.name)
+    print(build.sources)
+
+    # TODO: expand sources (if regex) and make sure they exist
+    source_directory = os.path.dirname(build.target.path)
+    fixed_sources = [os.path.join(source_directory, source) for source in build.sources]
+
+    sources = []
+    for source in fixed_sources:
+        p = pathlib.Path('.')
+        glob = p.glob(source)
+        print(source, 'as glob ', glob)
+        for g in glob:
+            print(g)
+            sources.append(str(g))
+
+    print(sources)
+    cc_flat_sources = ' '.join(sources)
+
+    # Compile all includes
+    cc_includes = ' '.join(['-I' + include for include in build.includes])
+    cc_flags = build.flags
+
+    # Dependency generation command
+    cmd_dep = build.compiler + ' -MM ' + cc_includes + cc_flat_sources
+
+    dep_output = subprocess.check_output(cmd_dep, shell=True)
+
+    print('dep_output:', dep_output)
+
+    # Parse the dependency output
+    dep_output = dep_output.decode('utf-8')
+    dep_output = dep_output.split()
+
+    print('dep_output:', dep_output)
+
+    # Separate for each file
+    dependency_set = set()
+    dependency_list = []
+
+    source_info = {}
+
+    source_index, i = 0, 0
+    while i < len(dep_output):
+        if dep_output[i].endswith(':'):
+            target = dep_output[i][:-1]
+            deps = []
+            
+            i += 1
+            while i < len(dep_output) and not dep_output[i].endswith(':'):
+                dep = dep_output[i]
+                if dep == '\\':
+                    i += 1
+                    continue
+
+                if dep in dependency_set:
+                    deps.append(dependency_list.index(dep))
+                else:
+                    deps.append(len(dependency_list))
+                    dependency_set.add(dep)
+                    dependency_list.append(dep)
+                i += 1
+
+            source_info[sources[source_index]] = deps
+
+            source_index += 1
+            i -= 1
+        else:
+            i += 1
+
+    print('dependency_list:', dependency_list)
+    print('source_info:', source_info)
+
+    # Forward information to the build object
+    build._cc_includes = cc_includes
+    build._cc_depenedencies = dependency_list
+    build._cc_sources = source_info
+
+
+'''
+DONT WORRY ABOUT CACHING BUILD CONFIGURATIONS UNTIL CONSTRUCTING DEPENDENCIES
+REALLY TAKES A LONG TIME
+
+# Save the build configuration/dependency information as a JSON file
+import json
+
+def cache_json(build, path):
+    print('Saving build for target: ' + build.target.name)
+
+    with open(path, 'w') as file:
+        json.dump(build._cc_sources, file)
+        json.dump(build._cc_depenedencies, file)
+'''
+
+build = targets['multisource'].builds['default']
+preprocess_build(build)
+
+print(build._cc_sources)
