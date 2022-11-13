@@ -36,7 +36,7 @@ class colors:
 
 # Generate message
 def message(type, color, message):
-    return colors.BOLD + 'smake: ' + color + type + ': ' + colors.RESET + message
+    return colors.BOLD + color + type + ': ' + colors.RESET + message
 
 # Assert that a file exists
 def assert_file(file_path):
@@ -56,43 +56,443 @@ for root, dirs, files in os.walk('.'):
 
 print(smake_files)
 
-file = open(smake_files[1], 'r')
-content = file.read()
-
 # Parsing
 from pyparsing import *
+from enum import Enum
+from dataclasses import dataclass
 
-lparen = Literal('(').suppress()
-rparen = Literal(')').suppress()
-equals = Literal('=').suppress()
-colon = Literal(':').suppress()
-dot = Literal('.').suppress()
+# TODO: use a function to generate auto ordered enum
+class TokenType(Enum):
+    INVOKE_START    = 1
+    INVOKE_END      = 2
+    EQUALS          = 3
+    COLON           = 4
+    DOT             = 5
+    STRING          = 6
+    IDENTIFIER      = 7
+    TERM            = 8
+    ARGS            = 9
+    INVOKE          = 10
+    EXPRESSION      = 11
+    ASSIGNMENT      = 12
+    STATEMENT       = 13
+    KEY_VALUE       = 14
+    FULL_IDENTIFIER = 15
+
+@dataclass
+class ErrorContext:
+    file: str
+    lines: list
+    linelist: list
+
+class Token:
+    def __init__(self, type, loc, end, value=None):
+        self.type = type
+        self.loc = loc
+        self.end = end
+        self.value = value
+
+    def __repr__(self):
+        return '{' + self.type.name + ', ' \
+            + str(self.value) + ', ' \
+            + '[' + str(self.loc) + ', ' \
+            + str(self.end) + ']' + '}'
+
+
+lparen = Literal('(')
+lparen.setParseAction(lambda loc, _: Token(TokenType.INVOKE_START, loc, loc + 1))
+
+rparen = Literal(')')
+rparen.setParseAction(lambda loc, _: Token(TokenType.INVOKE_END, loc, loc + 1))
+
+equals = Literal('=')
+equals.setParseAction(lambda loc, _: Token(TokenType.EQUALS, loc, loc + 1))
+
+colon = Literal(':')
+colon.setParseAction(lambda loc, _: Token(TokenType.COLON, loc, loc + 1))
+
+dot = Literal('.')
+dot.setParseAction(lambda loc, _: Token(TokenType.DOT, loc, loc + 1))
+
+# Forward declare terms
+term = Forward()
 
 double_string = QuotedString('"', escChar='\\')
 single_string = QuotedString("'", escChar='\\')
 string = double_string | single_string
+string.setParseAction(lambda loc, t: Token(TokenType.STRING, loc, loc + len(t[0]) + 2, t[0]))
+
+primitive = string
 
 # Recursive identifier (i.e. a.b.c)
 identifier = Word(alphas + '_', alphanums + '_')
-identifier = identifier + ZeroOrMore(dot + identifier)
+identifier.setParseAction(lambda loc, t: Token(TokenType.IDENTIFIER, loc, loc + len(t[0]), t[0]))
 
-# term = string | identifier
-term = Forward()
+def compress_identifiers(loc, tokens):
+    end = loc
+
+    compressed = []
+    for t in tokens:
+        end = t.end
+        if t.type != TokenType.IDENTIFIER:
+            continue
+
+        compressed.append(t)
+
+    return Token(TokenType.FULL_IDENTIFIER, loc, end, compressed)
+
+full_identifier = ZeroOrMore(identifier + dot) + identifier
+full_identifier.setParseAction(compress_identifiers)
+
+# Key value pair (i.e. a: b)
+key_value_pair = primitive + colon + term
+key_value_pair.setParseAction(lambda loc, t: Token(TokenType.KEY_VALUE, loc, t[-1].end, (t[0], t[2])))
+
+def compress_args(loc, tokens):
+    end = loc
+
+    compressed = []
+    for t in tokens:
+        end = t.end
+        assert t.type == TokenType.TERM
+
+        compressed.append(t.value)
+
+    return Token(TokenType.ARGS, loc, end, compressed)
+
 args = delimitedList(term) | Empty()
+args.setParseAction(compress_args)
 
-invocation = identifier + lparen + args + rparen
-member_invocation = identifier + dot + invocation
+def compress_invocation(loc, tokens):
+    end = loc
 
-term <<= (member_invocation | invocation | identifier | string)
+    compressed = []
 
-expression = term
+    exclude = [TokenType.INVOKE_START, TokenType.INVOKE_END]
+    for t in tokens:
+        end = t.end
+
+        if t.type not in exclude:
+            compressed.append(t)
+    
+    return Token(TokenType.INVOKE, loc, end, compressed)
+
+invocation = full_identifier + lparen + args + rparen
+invocation.setParseAction(compress_invocation)
+
+term <<= (key_value_pair | invocation | full_identifier | string)
+term.setParseAction(lambda loc, t: Token(TokenType.TERM, loc, t[0].end, t[0]))
+
+expression = term.copy()
+expression.setParseAction(lambda loc, t: Token(TokenType.EXPRESSION, loc, t[0].end, t))
+
 assignment = identifier + equals + expression
+assignment.setParseAction(lambda loc, t: Token(TokenType.ASSIGNMENT, loc, t[-1].end, t))
 
-smake_line = assignment | expression
+statement = assignment | expression
+statement.setParseAction(lambda loc, t: Token(TokenType.STATEMENT, loc, t[0].end, t))
 
-# Get type of the result
-lines = [line for line in content.splitlines() if line.strip() != '']
+smake_file = OneOrMore(statement)
+smake_file.parseWithTabs()
 
-for line in lines:
+# Error exceptions
+class InvalidInput(Exception):
+    def __init__(self, message):
+        self.message = message
+
+    def __str__(self):
+        return self.message
+
+# Build and Target structures
+class Build:
+    def __init__(self, target):
+        self.target = target
+        self.sources = []
+        self.libraries = []
+        self.flags = ''
+
+    def add_sources(self, *sources):
+        print('adding sources: ' + str(sources))
+        self.sources.extend(sources)
+
+    def add_libraries(self, *libraries):
+        print('adding libraries: ' + str(libraries))
+        self.libraries.extend(libraries)
+
+    def set_flags(self, flags):
+        print('setting flags: ' + flags)
+        self.flags = flags
+
+    def add_flags(self, flags):
+        print('adding flags: ' + flags)
+        self.flags += ' ' + flags
+
+    def clone(self):
+        return copy.deepcopy(self)
+
+class Target:
+    def __init__(self, name):
+        self.name = name
+        self.builds = {}
+        # TODO: multiple post-builds and install scripts..
+        # Script class?
+        self.post_builds = {}
+        self.install_scripts = []
+
+    def new_build(self):
+        return Build(self)
+
+    def add_build(self, build):
+        mode = 'default'
+        if isinstance(build, Build):
+            pass
+        elif isinstance(build, tuple) \
+                and isinstance(build[0], str) \
+                and isinstance(build[1], Build):
+            mode = build[0]
+            build = build[1]
+        else:
+            raise InvalidInput(
+                'provided argument must be of' + \
+                ' type Build or (str, Build)'
+            )
+        
+        self.builds[mode] = build
+
+    def add_builds(self, *builds):
+        for build in builds:
+            self.add_build(build)
+
+    def set_post_build(self, script):
+        mode = 'default'
+        if isinstance(script, str):
+            pass
+        elif isinstance(script, tuple) \
+                and isinstance(script[0], str) \
+                and isinstance(script[1], str):
+            mode = script[0]
+            script = script[1]
+        else:
+            raise InvalidInput(
+                'provided argument must be of' + \
+                ' type str or (str, str)'
+            )
+
+        self.post_builds[mode] = script
+    
+    def set_post_builds(self, *scripts):
+        for script in scripts:
+            self.set_post_build(script)
+
+    def on_install(self, *scripts):
+        self.install_scripts.extend(scripts)
+        print('adding install script(s):', scripts)
+
+# All target across every smake file
+targets = {}
+
+def error_at(ectx, col, length, msg, until=-1):
+    file = ectx.file
+    if file.startswith('./'):
+        file = file[2:]
+
+    linenumber = 1
+    offset = 0
+
+    for end in ectx.linelist:
+        if col < end:
+            break
+
+        linenumber += 1
+        offset = end
+
+    col -= offset
+
+    # Get the actual line
+    line = ectx.lines[linenumber - 1]
+
+    print(colors.BOLD + str(file) + ' (' + str(linenumber) + '):' \
+        + colors.FAIL + ' error: ' + colors.RESET + msg)
     print(line)
-    print('\tparses to:', smake_line.parseString(line))
+
+    # Highlight the error
+    spacing = [c if c == '\t' else ' ' for c in line[:col - 1]]
+    spacing = ''.join(spacing)
+    
+    print(spacing + colors.BOLD + '^' + '~' * (length - 1) + colors.RESET)
+
+    if until != -1:
+        # Continue printing lines that are part of the error
+        while linenumber < len(ectx.lines):
+            if ectx.linelist[linenumber] > until:
+                break
+
+            print(ectx.lines[linenumber])
+            linenumber += 1
+    
+    # Terminate
+    exit(-1)
+
+def extent(token):
+    return token.end - token.loc
+
+import difflib
+import inspect
+
+def evaluate_token(ectx, variables, stack, token):
+    # TODO: map instead of if/else
+    if token.type == TokenType.TERM:
+        return evaluate_token(ectx, variables, stack, token.value)
+    elif token.type == TokenType.STRING:
+        return token.value
+    elif token.type == TokenType.KEY_VALUE:
+        key = evaluate_token(ectx, variables, stack, token.value[0])
+        value = evaluate_token(ectx, variables, stack, token.value[1])
+        return (key, value)
+    elif token.type == TokenType.FULL_IDENTIFIER:
+        identifiers = token.value
+        base_identifier = identifiers[0].value
+        if base_identifier not in variables:
+            message = 'undefined variable \'' + base_identifier + '\''
+            error_at(ectx, token.loc, extent(token), message)
+
+        base = variables[base_identifier]
+        for member in token.value[1:]:
+            member_name = member.value
+            try:
+                base = getattr(base, member_name)
+            except AttributeError as e:
+                # Get closest match
+                methods = [method for method in dir(base) if callable(getattr(base, method))]
+                matches = difflib.get_close_matches(member_name, methods)
+                best = matches[0] if len(matches) > 0 else None
+                message = base_identifier + ' (type ' + type(base).__name__ + \
+                    ') has no member \'' + member_name + '\''
+                if best:
+                    message += ', did you mean \'' + best + '\'?'
+
+                error_at(ectx, member.loc, extent(member), message)
+        return base
+    elif token.type == TokenType.ARGS:
+        args = []
+        for arg in token.value:
+            args.append(evaluate_token(ectx, variables, stack, arg))
+        return args
+    elif token.type == TokenType.EXPRESSION:
+        return evaluate_expression(ectx, variables, token.value)
+    elif token.type == TokenType.INVOKE:
+        sig = token.value
+        ftn = evaluate_token(ectx, variables, stack, sig[0])
+        args = evaluate_token(ectx, variables, stack, sig[1])
+
+        expected = ftn.__code__.co_argcount
+        if inspect.ismethod(ftn):
+            expected -= 1
+        
+        has_varargs = ftn.__code__.co_flags & inspect.CO_VARARGS
+
+        print('calling ' + str(ftn) + ' with ' + str(args) + ' (expected ' + str(expected) + ')')
+        if len(args) != expected and not has_varargs:
+            message = 'expected ' + str(expected) + ' arguments, got ' + str(len(args))
+            error_at(ectx, sig[0].loc, extent(sig[0]), message, until=token.end)
+
+        try:
+            return ftn(*args)
+        except InvalidInput as e:
+            print('error', ectx.linelist)
+            error_at(ectx, sig[0].loc, extent(sig[0]), e.message, until=token.end)
+    else:
+        message_str = 'unexpected token ' + token.type.name
+        print('error on token:', token)
+        print(ectx.linelist)
+        error_at(ectx, token.loc, extent(token), message_str)
+
+def evaluate_expression(ectx, variables, tokens):
+    stack = []
+
+    it = iter(tokens)
+    while True:
+        token = next(it, None)
+        if token is None:
+            break
+        
+        stack.append(evaluate_token(ectx, variables, stack, token))
+    
+    if len(stack) == 0:
+        assert False, 'invalid expression'
+
+    return stack.pop()
+
+def evaluate_file(path):
+    # All variables in a single evaluation context
+    variables = {
+            'target': lambda name: Target(name)
+    }
+
+    # Open the file
+    file = open(path, 'r')
+    content = file.read()
+
+    parsed = smake_file.parseString(content, parseAll=True)
+
+    linelist = []
+
+    chars = 0
+    for c in content:
+        if c == '\n':
+            linelist.append(chars)
+        chars += 1
+    
+    linelist.append(chars)
+
+    print(linelist)
+
+    lines = content.splitlines()
+
+    ectx = ErrorContext(path, lines, linelist)
+
+    for statement in parsed:
+        print(statement)
+        ttype = statement.type
+
+        assert ttype == TokenType.STATEMENT, 'invalid statement'
+
+        statement = statement.value[0]
+
+        ttype = statement.type
+        if ttype == TokenType.ASSIGNMENT:
+            assignment = statement.value
+            assert len(assignment) >= 3, 'invalid assignment'
+
+            identifier = assignment[0]
+            assert identifier.type == TokenType.IDENTIFIER, 'invalid identifier'
+
+            equals = assignment[1]
+            assert equals.type == TokenType.EQUALS, 'invalid equals'
+
+            expression = assignment[2]
+            assert expression.type == TokenType.EXPRESSION, 'invalid expression'
+
+            expression_value = evaluate_expression(ectx, variables, expression.value)
+
+            print('assignment:', identifier.value, expression.value)
+
+            variables[identifier.value] = expression_value
+        else:
+            expression = statement.value
+            print('expression:', expression)
+            print('\tevaluates to:', evaluate_expression(ectx, variables, expression))
+
+    # After evaluating a single context, merge all targets
+    for var in variables:
+        if isinstance(variables[var], Target):
+            # TODO: should we always overwrite?
+            targets[var] = variables[var]
+
+# evaluate_file(smake_files[1])
+evaluate_file(smake_files[0])
+
+for target in targets:
+    print('target:', target)
+    print('builds:', targets[target].builds)
+    print('install scripts:', targets[target].install_scripts)
