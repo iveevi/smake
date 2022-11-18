@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pyparsing import Literal, Forward, QuotedString, \
     Word, ZeroOrMore, alphas, alphanums, delimitedList, \
-    Empty, OneOrMore, Optional
+    Empty, OneOrMore, restOfLine
 
 # Initialize colorama
 colorama.init()
@@ -64,6 +64,7 @@ class TokenType(Enum):
     STATEMENT       = 13
     KEY_VALUE       = 14
     FULL_IDENTIFIER = 15
+    COMMENT         = 16
 
 @dataclass
 class ErrorContext:
@@ -175,7 +176,10 @@ def generate_grammar():
     assignment = identifier + equals + expression
     assignment.setParseAction(lambda loc, t: Token(TokenType.ASSIGNMENT, loc, t[-1].end, t))
 
-    statement = assignment | expression
+    comment = Literal('#') + restOfLine
+    comment.setParseAction(lambda loc, _: Token(TokenType.COMMENT, loc, loc + 1, ''))
+
+    statement = assignment | expression | comment
     statement.setParseAction(lambda loc, t: Token(TokenType.STATEMENT, loc, t[0].end, t))
 
     smake_file = OneOrMore(statement)
@@ -193,7 +197,7 @@ class InvalidInput(Exception):
 
 # Build and Target structures
 class Build:
-    DEFAULT_COMPILER = 'gcc'
+    DEFAULT_COMPILER = 'g++'
 
     def __init__(self, target, path):
         self.target = target
@@ -205,8 +209,9 @@ class Build:
         self.compiler = Build.DEFAULT_COMPILER
 
         # Fields to be filled by program
-        self._cc_includes = None
         self._cc_depenedencies = None
+        self._cc_dir = None
+        self._cc_includes = None
         self._cc_sources = None
 
     def add_sources(self, *sources):
@@ -448,7 +453,9 @@ def evaluate_file(grammar, path):
         statement = statement.value[0]
 
         ttype = statement.type
-        if ttype == TokenType.ASSIGNMENT:
+        if ttype == TokenType.COMMENT:
+            continue
+        elif ttype == TokenType.ASSIGNMENT:
             assignment = statement.value
             assert len(assignment) >= 3, 'invalid assignment'
 
@@ -524,40 +531,45 @@ import subprocess
 # Preprocess a particular build configuration
 def preprocess_build(build):
     print('Preprocessing build for target: ' + build.target.name)
-    print(build.sources)
 
     # TODO: expand sources (if regex) and make sure they exist
-    source_directory = os.path.dirname(build.target.path)
-    fixed_sources = [os.path.join(source_directory, source) for source in build.sources]
+    build._cc_dir = os.path.dirname(build.target.path)
+    fixed_sources = [os.path.join(build._cc_dir, source) for source in build.sources]
 
     sources = []
     for source in fixed_sources:
         p = pathlib.Path('.')
         glob = p.glob(source)
-        print(source, 'as glob ', glob)
         for g in glob:
-            print(g)
+            # Skip if directory (no recursive globbing)
+            if g.is_dir():
+                continue
+
+            # Get absolute path
+            g = os.path.abspath(g)
             sources.append(str(g))
 
-    print(sources)
     cc_flat_sources = ' '.join(sources)
 
     # Compile all includes
-    cc_includes = ' '.join(['-I' + include for include in build.includes])
+    cc_includes = []
+    for include in build.includes:
+        include = os.path.join(build._cc_dir, include)
+        include = os.path.abspath(include)
+        cc_includes.append(include)
+
+    cc_includes = ['-I' + include for include in cc_includes]
     cc_flags = build.flags
 
     # Dependency generation command
-    cmd_dep = build.compiler + ' -MM ' + cc_includes + cc_flat_sources
+    cmd_dep = build.compiler + ' -MM ' + ' '.join(cc_includes) + ' ' + cc_flat_sources
+    print('dep cmd: ', cmd_dep)
 
     dep_output = subprocess.check_output(cmd_dep, shell=True)
-
-    print('dep_output:', dep_output)
 
     # Parse the dependency output
     dep_output = dep_output.decode('utf-8')
     dep_output = dep_output.split()
-
-    print('dep_output:', dep_output)
 
     # Separate for each file
     dependency_set = set()
@@ -593,31 +605,163 @@ def preprocess_build(build):
         else:
             i += 1
 
-    print('dependency_list:', dependency_list)
-    print('source_info:', source_info)
-
     # Forward information to the build object
     build._cc_includes = cc_includes
     build._cc_depenedencies = dependency_list
     build._cc_sources = source_info
 
+# Get modification time for each dependency
+def get_dependency_mtime(dependencies):
+    dependency_mtime = []
+    for dependency in dependencies:
+        mtime = os.path.getmtime(dependency)
+        dependency_mtime.append(mtime)
 
-'''
-DONT WORRY ABOUT CACHING BUILD CONFIGURATIONS UNTIL CONSTRUCTING DEPENDENCIES
-REALLY TAKES A LONG TIME
+    return dependency_mtime
 
-# Save the build configuration/dependency information as a JSON file
-import json
+# Generate build commands
+import hashlib
 
-def cache_json(build, path):
-    print('Saving build for target: ' + build.target.name)
+def generate_commands(build, mode):
+    # Create the build directories
+    # TODO: assist method
+    smake_dir = os.path.join(build._cc_dir, '.smake')
+    all_builds_dir = os.path.join(smake_dir, 'builds')
 
-    with open(path, 'w') as file:
-        json.dump(build._cc_sources, file)
-        json.dump(build._cc_depenedencies, file)
-'''
+    build_name = build.target.name + '-' + mode
 
-build = targets['multisource'].builds['default']
-preprocess_build(build)
+    build_dir = os.path.join(all_builds_dir, build_name)
+    os.makedirs(build_dir, exist_ok=True)
 
-print(build._cc_sources)
+    # Compilation commands
+    command_map = {}
+    hashed_sources = {}
+
+    build_outputs = []
+    for source in build._cc_sources:
+        output = source.replace('/', '_') + '.o'
+
+        # Hash each output to a shorter name
+        m = hashlib.md5()
+        m.update(output.encode('utf-8'))
+        m = m.hexdigest()[:10]
+
+        if m in hashed_sources:
+            hashed_sources[m] += 1
+        else:
+            hashed_sources[m] = 1
+
+        m += '{:04d}'.format(hashed_sources[m])
+
+        print('Hashed source: ', m)
+
+        output = m + '.o'
+        output = os.path.join(build_dir, output)
+
+        build_outputs.append(output)
+
+        cmd_compile = [build.compiler, '-c', source, '-o', output]
+        cmd_compile += build._cc_includes
+        command_map[source] = (output, cmd_compile)
+
+    # Linking command
+    all_targets_dir = os.path.join(smake_dir, 'targets')
+    os.makedirs(all_targets_dir, exist_ok=True)
+
+    output = os.path.join(all_targets_dir, build.target.name)
+
+    cmd_link = build.compiler + ' -o ' + output
+    cmd_link += ' ' + ' '.join(build_outputs)
+    cmd_link += ' ' + ' '.join(['-l' + lib for lib in build.libraries])
+
+    command_map['__link__'] = cmd_link
+
+    return command_map, output
+
+# Check if a file needs to be recompiled
+def needs_recompile(build, source, source_out_mtime, dependency_mtime):
+    for index in build._cc_sources[source]:
+        if dependency_mtime[index] > source_out_mtime:
+            return True
+    
+    return False
+
+def build_target(target, mode):
+    build = target.builds[mode]
+    preprocess_build(build)
+
+    command_map, output = generate_commands(build, mode)
+
+    dependency_mtime = get_dependency_mtime(build._cc_depenedencies)
+
+    failures = []
+    for source in command_map:
+        if source == '__link__':
+            continue
+       
+        output, cmd_compile = command_map[source]
+
+        source_out_mtime = 0
+        if os.path.exists(output):
+            source_out_mtime = os.path.getmtime(output)
+
+        recompile = needs_recompile(build, source, source_out_mtime, dependency_mtime)
+        print('needs_recompile:', recompile)
+
+        if not recompile:
+            print('Skipping: ' + source)
+            continue
+
+        proc = subprocess.Popen(cmd_compile)
+        proc.wait()
+        out, err = proc.communicate()
+
+        if out != None:
+            print(out)
+
+        if err != None:
+            print(err)
+
+        if proc.returncode != 0:
+            failures.append(source)
+
+    if len(failures) > 0:
+        print('Failed to compile: ' + ', '.join(failures))
+        return
+
+    print('libraries to link with', build.libraries)
+    print(command_map['__link__'])
+    proc = subprocess.Popen(command_map['__link__'], shell=True)
+    proc.wait()
+    out, err = proc.communicate()
+    print(out, err)
+
+    if proc.returncode != 0:
+        print('Failed to link')
+        return
+
+    print('postbuild:', target.post_builds)
+
+    if mode in target.post_builds:
+        script_variables = {
+            'SMAKE_TARGET': output
+        }
+
+        cmd = target.post_builds[mode]
+        for var in script_variables:
+            cmd = cmd.replace('$' + var, script_variables[var])
+
+        print(cmd)
+        subprocess.call(cmd, shell=True)
+
+import argparse
+
+argparser = argparse.ArgumentParser()
+argparser.add_argument('target', help='The target to build')
+argparser.add_argument('-m', "--mode", help="Execution mode", default='default')
+
+args = argparser.parse_args()
+
+print('args:', args)
+
+build_target(targets[args.target], args.mode)
