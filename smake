@@ -195,6 +195,23 @@ class InvalidInput(Exception):
     def __str__(self):
         return self.message
 
+# Script class to encapsulate script and its options
+class Script:
+    def __init__(self, pathdir):
+        self.commands = []
+        self.cwd = pathdir
+        self.pathdir = pathdir
+
+    def set_cwd(self, cwd):
+        self.cwd = os.path.join(self.pathdir, cwd)
+        self.cwd = os.path.normpath(self.cwd)
+
+    def __repr__(self):
+        return 'Script {\n' \
+            + '\tcommands: ' + str(self.commands) + '\n' \
+            + '\tcwd: ' + str(self.cwd) + '\n' \
+            + '}'
+
 # Build and Target structures
 class Build:
     DEFAULT_COMPILER = 'g++'
@@ -213,6 +230,9 @@ class Build:
         self._cc_dir = None
         self._cc_includes = None
         self._cc_sources = None
+
+    def set_compiler(self, compiler):
+        self.compiler = compiler
 
     def add_sources(self, *sources):
         self.sources.extend(sources)
@@ -269,18 +289,30 @@ class Target:
     def set_post_build(self, script):
         mode = 'default'
         if isinstance(script, str):
+            cmd = script
+            script = Script(os.path.dirname(self.path))
+            script.commands.append(cmd)
+        elif isinstance(script, Script):
             pass
         elif isinstance(script, tuple) \
                 and isinstance(script[0], str) \
                 and isinstance(script[1], str):
             mode = script[0]
+            cmd = script[1]
+            script = Script(os.path.dirname(self.path))
+            script.commands.append(cmd)
+        elif isinstance(script, tuple) \
+                and isinstance(script[0], str) \
+                and isinstance(script[1], Script):
+            mode = script[0]
             script = script[1]
         else:
             raise InvalidInput(
                 'provided argument must be of' + \
-                ' type str or (str, str)'
+                ' the forms: str, Script, (str, str), (str, Script)'
             )
 
+        assert(isinstance(script, Script))
         self.post_builds[mode] = script
     
     def set_post_builds(self, *scripts):
@@ -351,11 +383,18 @@ def evaluate_token(ectx, variables, stack, token):
     elif token.type == TokenType.FULL_IDENTIFIER:
         identifiers = token.value
         base_identifier = identifiers[0].value
-        if base_identifier not in variables:
-            message = 'undefined variable \'' + base_identifier + '\''
-            error_at(ectx, token.loc, extent(token), message)
 
-        base = variables[base_identifier]
+        base = None
+        if base_identifier in variables:
+            base = variables[base_identifier]
+        else:
+            # TODO: try evaluating the identifier
+            try:
+                base = eval(base_identifier)
+            except:
+                message = 'undefined symbol \'' + base_identifier + '\''
+                error_at(ectx, token.loc, extent(token), message)
+
         for member in token.value[1:]:
             member_name = member.value
             try:
@@ -381,17 +420,27 @@ def evaluate_token(ectx, variables, stack, token):
         return evaluate_expression(ectx, variables, token.value)
     elif token.type == TokenType.INVOKE:
         sig = token.value
+        ftn_name = sig[0].value[-1].value
         ftn = evaluate_token(ectx, variables, stack, sig[0])
         args = evaluate_token(ectx, variables, stack, sig[1])
 
-        expected = ftn.__code__.co_argcount
-        if inspect.ismethod(ftn):
-            expected -= 1
-        
-        has_varargs = ftn.__code__.co_flags & inspect.CO_VARARGS
+        if not callable(ftn):
+            error_at(ectx, sig[0].loc, extent(sig[0]), ftn_name + ' is not a function')
 
-        if len(args) != expected and not has_varargs:
+        fsig = inspect.signature(ftn)
+        non_variadic = [
+            param for param in fsig.parameters.values()
+            if param.kind != inspect.Parameter.VAR_POSITIONAL
+        ]
+
+        variadic = len(non_variadic) != len(fsig.parameters)
+
+        expected = len(non_variadic)
+        if not variadic and len(args) != expected:
             message = 'expected ' + str(expected) + ' arguments, got ' + str(len(args))
+            error_at(ectx, sig[0].loc, extent(sig[0]), message, until=token.end)
+        elif variadic and len(args) < expected:
+            message = 'expected at least ' + str(expected) + ' arguments, got ' + str(len(args))
             error_at(ectx, sig[0].loc, extent(sig[0]), message, until=token.end)
 
         try:
@@ -434,8 +483,11 @@ def make_error_context(path, content):
 
 def evaluate_file(grammar, path):
     # All variables in a single evaluation context
+    pathdir = os.path.dirname(path)
+
     variables = {
-            'target': lambda name: Target(name, path)
+            'target': lambda name: Target(name, path),
+            'script': lambda: Script(pathdir),
     }
 
     # Open the file
@@ -529,11 +581,17 @@ list_targets(targets)
 import subprocess
 
 # Preprocess a particular build configuration
+#   There are quite a few issues when trying to cache
+#   the dependencies. For example, we need to update the file
+#   if the smake file changes, if the source file changes, if any
+#   of the dependencies change, etc. This is a lot of work, and
+#   it's not clear if it's worth it. For now, we skip caching
+#   Maybe we can multithread this?
 def preprocess_build(build):
     print('Preprocessing build for target: ' + build.target.name)
 
     # TODO: expand sources (if regex) and make sure they exist
-    build._cc_dir = os.path.dirname(build.target.path)
+    build._cc_dir = os.path.dirname(build.path)
     fixed_sources = [os.path.join(build._cc_dir, source) for source in build.sources]
 
     sources = []
@@ -563,7 +621,7 @@ def preprocess_build(build):
 
     # Dependency generation command
     cmd_dep = build.compiler + ' -MM ' + ' '.join(cc_includes) + ' ' + cc_flat_sources
-    print('dep cmd: ', cmd_dep)
+    print(cmd_dep)
 
     dep_output = subprocess.check_output(cmd_dep, shell=True)
 
@@ -577,18 +635,42 @@ def preprocess_build(build):
 
     source_info = {}
 
-    source_index, i = 0, 0
-    while i < len(dep_output):
-        if dep_output[i].endswith(':'):
-            target = dep_output[i][:-1]
-            deps = []
-            
-            i += 1
-            while i < len(dep_output) and not dep_output[i].endswith(':'):
-                dep = dep_output[i]
-                if dep == '\\':
-                    i += 1
-                    continue
+    source_index, index = 0, 0
+    while source_index < len(sources):
+        source = sources[source_index]
+
+        # Move to the next source
+        expected = os.path.basename(source)
+        expected = pathlib.Path(expected).stem + '.o'
+
+
+        def loop_condition(index, expected):
+            if expected is None:
+                return True
+
+            return (dep_output[index] != expected) and \
+                (dep_output[index] != expected + ':')
+
+        while (index < len(dep_output)) and loop_condition(index, expected):
+            index += 1
+
+        assert (dep_output[index] == expected) \
+                or (dep_output[index] == expected + ':'), \
+                'invalid dependency output'
+
+        # Collect the dependencies
+        index += 1 # Skip the colon
+
+        next_expected = None
+        if source_index < len(sources) - 1:
+            next_expected = os.path.basename(sources[source_index + 1])
+            next_expected = pathlib.Path(next_expected).stem + '.o'
+
+        deps = []
+        while (index < len(dep_output)) and loop_condition(index, next_expected):
+            dep = dep_output[index]
+            if dep != '\\' and dep != ':':
+                dep = os.path.normpath(dep)
 
                 if dep in dependency_set:
                     deps.append(dependency_list.index(dep))
@@ -596,14 +678,11 @@ def preprocess_build(build):
                     deps.append(len(dependency_list))
                     dependency_set.add(dep)
                     dependency_list.append(dep)
-                i += 1
 
-            source_info[sources[source_index]] = deps
+            index += 1
 
-            source_index += 1
-            i -= 1
-        else:
-            i += 1
+        source_info[source] = deps
+        source_index += 1
 
     # Forward information to the build object
     build._cc_includes = cc_includes
@@ -653,8 +732,6 @@ def generate_commands(build, mode):
 
         m += '{:04d}'.format(hashed_sources[m])
 
-        print('Hashed source: ', m)
-
         output = m + '.o'
         output = os.path.join(build_dir, output)
 
@@ -670,11 +747,11 @@ def generate_commands(build, mode):
 
     output = os.path.join(all_targets_dir, build.target.name)
 
-    cmd_link = build.compiler + ' -o ' + output
-    cmd_link += ' ' + ' '.join(build_outputs)
-    cmd_link += ' ' + ' '.join(['-l' + lib for lib in build.libraries])
+    cmd_link = [build.compiler, '-o', output]
+    cmd_link += build_outputs
+    cmd_link += ['-l' + lib for lib in build.libraries]
 
-    command_map['__link__'] = cmd_link
+    command_map['__link__'] = (output, cmd_link)
 
     return command_map, output
 
@@ -686,36 +763,42 @@ def needs_recompile(build, source, source_out_mtime, dependency_mtime):
     
     return False
 
-def build_target(target, mode):
-    build = target.builds[mode]
-    preprocess_build(build)
+import multiprocessing
 
-    command_map, output = generate_commands(build, mode)
+def __thread_init__(_lock, _counter, _total):
+    global lock, counter, line, total
 
-    dependency_mtime = get_dependency_mtime(build._cc_depenedencies)
+    lock = _lock
+    counter = _counter
+    total = _total
 
-    failures = []
-    for source in command_map:
-        if source == '__link__':
-            continue
-       
-        output, cmd_compile = command_map[source]
+import shutil
 
-        source_out_mtime = 0
-        if os.path.exists(output):
-            source_out_mtime = os.path.getmtime(output)
+def compile_source(build, dependency_mtime, source, output, cmd_compile):
+    global counter, total
 
-        recompile = needs_recompile(build, source, source_out_mtime, dependency_mtime)
-        print('needs_recompile:', recompile)
+    source_out_mtime = 0
+    if os.path.exists(output):
+        source_out_mtime = os.path.getmtime(output)
 
-        if not recompile:
-            print('Skipping: ' + source)
-            continue
+    recompile = needs_recompile(build, source, source_out_mtime, dependency_mtime)
 
-        proc = subprocess.Popen(cmd_compile)
-        proc.wait()
-        out, err = proc.communicate()
+    if not recompile:
+        with counter.get_lock():
+            size = shutil.get_terminal_size()
+            print(' ' * size.columns, end='\r')
+            msg = colors.BOLD + f'[{counter.value}/{total}]' + colors.RESET
+            msg += f' {source} '
+            msg += colors.OKBLUE + '(up to date)' + colors.RESET
+            print(msg, end='\r')
+            counter.value += 1
+        return source
 
+    proc = subprocess.Popen(cmd_compile)
+    proc.wait()
+    out, err = proc.communicate()
+
+    with counter.get_lock():
         if out != None:
             print(out)
 
@@ -723,36 +806,109 @@ def build_target(target, mode):
             print(err)
 
         if proc.returncode != 0:
-            failures.append(source)
+            size = shutil.get_terminal_size()
+            print(' ' * size.columns, end='\r')
+            msg = colors.BOLD + f'[{counter.value}/{total}]' + colors.RESET
+            msg += f' {source} '
+            msg += colors.FAIL + '(failed)' + colors.RESET
+            print(msg, end='\r')
+            counter.value += 1
+            return None
+
+        size = shutil.get_terminal_size()
+        print(' ' * size.columns, end='\r')
+        msg = colors.BOLD + f'[{counter.value}/{total}]' + colors.RESET
+        msg += f' {source} '
+        msg += colors.OKGREEN + '(success)' + colors.RESET
+        print(msg, end='\r')
+        counter.value += 1
+        return source
+
+def build_target(target, mode, threads=16):
+    build = target.builds[mode]
+    preprocess_build(build)
+
+    command_map, output = generate_commands(build, mode)
+
+    dependency_mtime = get_dependency_mtime(build._cc_depenedencies)
+
+    args = []
+    for source in command_map:
+        if source == '__link__':
+            continue
+
+        output, cmd_compile = command_map[source]
+        args.append((build, dependency_mtime, source, output, cmd_compile))
+
+    counter = multiprocessing.Value('i', 1)
+    with multiprocessing.Pool(threads,
+                initializer=__thread_init__,
+                initargs=(multiprocessing.Lock(), counter, len(args))
+            ) as pool:
+        rets = pool.starmap(compile_source, args)
+
+    # Gather failed sources
+    # TODO: method
+    source_indexed = command_map.copy()
+    source_indexed.pop('__link__')
+    source_indexed = list(source_indexed.keys())
+
+    failures = []
+    for i in range(len(rets)):
+        if rets[i] == None:
+            failures.append(source_indexed[i])
 
     if len(failures) > 0:
-        print('Failed to compile: ' + ', '.join(failures))
+        size = shutil.get_terminal_size()
+        print(' ' * size.columns, end='\r')
+        msg = 'Failed to compile the following sources:'
+        print(message('error', colors.FAIL, msg))
+        for failure in failures:
+            print('\t', failure)
         return
+    else:
+        size = shutil.get_terminal_size()
+        print(' ' * size.columns, end='\r')
+        msg = 'All sources compiled successfully'
+        print(message('success', colors.OKGREEN, msg))
 
-    print('libraries to link with', build.libraries)
-    print(command_map['__link__'])
-    proc = subprocess.Popen(command_map['__link__'], shell=True)
+    output, cmd_link = command_map['__link__']
+    proc = subprocess.Popen(cmd_link, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     proc.wait()
     out, err = proc.communicate()
-    print(out, err)
+
+    if out != None and len(out) > 0:
+        print(out.decode('utf-8'))
+
+    if err != None and len(err) > 0:
+        print(err.decode('utf-8'))
 
     if proc.returncode != 0:
-        print('Failed to link')
+        msg = 'Failed to link the target ' + target.name + ' in mode ' + mode
+        print(message('error', colors.FAIL, msg))
         return
-
-    print('postbuild:', target.post_builds)
 
     if mode in target.post_builds:
         script_variables = {
-            'SMAKE_TARGET': output
+            'SMAKE_TARGET': os.path.abspath(output),
         }
 
-        cmd = target.post_builds[mode]
-        for var in script_variables:
-            cmd = cmd.replace('$' + var, script_variables[var])
+        script = target.post_builds[mode]
+        if len(script.commands) == 0:
+            msg = 'No commands specified in the post-build script'
+            print(message('warning', colors.WARNING, msg))
+            return
 
-        print(cmd)
-        subprocess.call(cmd, shell=True)
+        for var in script_variables:
+            for i in range(len(script.commands)):
+                cmd = script.commands[i]
+                script.commands[i] = cmd.replace('$' + var, script_variables[var])
+
+        msg = 'Running post-build script for target ' + target.name + ' in mode ' + mode
+        print(message('info', colors.OKBLUE, msg))
+        for cmd in script.commands:
+            print(message('exec', colors.OKCYAN, cmd))
+            subprocess.call(cmd, shell=True, cwd=script.cwd)
 
 import argparse
 
@@ -765,3 +921,5 @@ args = argparser.parse_args()
 print('args:', args)
 
 build_target(targets[args.target], args.mode)
+
+# Use python to run this file itself?
