@@ -1,3 +1,5 @@
+import copy
+
 multisource = target('multisource')
 
 sources = 'multisource/*.cpp'
@@ -8,7 +10,7 @@ build_default.add_sources(sources)
 build_default.add_libraries('pthread')
 build_default.set_flags('-std=c++11')
 
-build_debug = build_default.clone()
+build_debug = copy.deepcopy(build_default)
 build_debug.add_flags('-g')
 
 multisource.add_builds(

@@ -1,18 +1,12 @@
 #!/usr/bin/env python
 import copy
-import difflib
-import inspect
 import os
 import pathlib
 import platform
 import colorama
+import shlex
 
 from colorama import Fore, Style
-from dataclasses import dataclass
-from enum import Enum
-from pyparsing import Literal, Forward, QuotedString, \
-    Word, ZeroOrMore, alphas, alphanums, delimitedList, \
-    Empty, OneOrMore, restOfLine
 
 # Initialize colorama
 colorama.init()
@@ -47,146 +41,6 @@ def assert_file(file_path):
         print(message('fatal error', colors.FAIL, msg))
         exit(-1)
 
-# TODO: use a function to generate auto ordered enum
-class TokenType(Enum):
-    INVOKE_START    = 1
-    INVOKE_END      = 2
-    EQUALS          = 3
-    COLON           = 4
-    DOT             = 5
-    STRING          = 6
-    IDENTIFIER      = 7
-    TERM            = 8
-    ARGS            = 9
-    INVOKE          = 10
-    EXPRESSION      = 11
-    ASSIGNMENT      = 12
-    STATEMENT       = 13
-    KEY_VALUE       = 14
-    FULL_IDENTIFIER = 15
-    COMMENT         = 16
-
-@dataclass
-class ErrorContext:
-    file: str
-    lines: list
-    linelist: list
-
-class Token:
-    def __init__(self, type, loc, end, value=None):
-        self.type = type
-        self.loc = loc
-        self.end = end
-        self.value = value
-
-    def __repr__(self):
-        return '{' + self.type.name + ', ' \
-            + str(self.value) + ', ' \
-            + '[' + str(self.loc) + ', ' \
-            + str(self.end) + ']' + '}'
-
-def compress_identifiers(loc, tokens):
-    end = loc
-
-    compressed = []
-    for t in tokens:
-        end = t.end
-        if t.type != TokenType.IDENTIFIER:
-            continue
-
-        compressed.append(t)
-
-    return Token(TokenType.FULL_IDENTIFIER, loc, end, compressed)
-
-def compress_args(loc, tokens):
-    end = loc
-
-    compressed = []
-    for t in tokens:
-        end = t.end
-        assert t.type == TokenType.TERM
-
-        compressed.append(t.value)
-
-    return Token(TokenType.ARGS, loc, end, compressed)
-
-def compress_invocation(loc, tokens):
-    end = loc
-
-    compressed = []
-
-    exclude = [TokenType.INVOKE_START, TokenType.INVOKE_END]
-    for t in tokens:
-        end = t.end
-
-        if t.type not in exclude:
-            compressed.append(t)
-    
-    return Token(TokenType.INVOKE, loc, end, compressed)
-
-def generate_grammar():
-    lparen = Literal('(')
-    lparen.setParseAction(lambda loc, _: Token(TokenType.INVOKE_START, loc, loc + 1))
-
-    rparen = Literal(')')
-    rparen.setParseAction(lambda loc, _: Token(TokenType.INVOKE_END, loc, loc + 1))
-
-    equals = Literal('=')
-    equals.setParseAction(lambda loc, _: Token(TokenType.EQUALS, loc, loc + 1))
-
-    colon = Literal(':')
-    colon.setParseAction(lambda loc, _: Token(TokenType.COLON, loc, loc + 1))
-
-    dot = Literal('.')
-    dot.setParseAction(lambda loc, _: Token(TokenType.DOT, loc, loc + 1))
-
-    # Forward declare terms
-    term = Forward()
-
-    double_string = QuotedString('"', escChar='\\')
-    single_string = QuotedString("'", escChar='\\')
-    string = double_string | single_string
-    string.setParseAction(lambda loc, t: Token(TokenType.STRING, loc, loc + len(t[0]) + 2, t[0]))
-
-    primitive = string
-
-    # Recursive identifier (i.e. a.b.c)
-    identifier = Word(alphas + '_', alphanums + '_')
-    identifier.setParseAction(lambda loc, t: Token(TokenType.IDENTIFIER, loc, loc + len(t[0]), t[0]))
-
-    full_identifier = ZeroOrMore(identifier + dot) + identifier
-    full_identifier.setParseAction(compress_identifiers)
-
-    # Key value pair (i.e. a: b)
-    key_value_pair = primitive + colon + term
-    key_value_pair.setParseAction(lambda loc, t: Token(TokenType.KEY_VALUE, loc, t[-1].end, (t[0], t[2])))
-
-    args = delimitedList(term) | Empty()
-    args.setParseAction(compress_args)
-
-    invocation = full_identifier + lparen + args + rparen
-    invocation.setParseAction(compress_invocation)
-
-    term <<= (key_value_pair | invocation | full_identifier | string)
-    term.setParseAction(lambda loc, t: Token(TokenType.TERM, loc, t[0].end, t[0]))
-
-    expression = term.copy()
-    expression.setParseAction(lambda loc, t: Token(TokenType.EXPRESSION, loc, t[0].end, t))
-
-    assignment = identifier + equals + expression
-    assignment.setParseAction(lambda loc, t: Token(TokenType.ASSIGNMENT, loc, t[-1].end, t))
-
-    comment = Literal('#') + restOfLine
-    comment.setParseAction(lambda loc, _: Token(TokenType.COMMENT, loc, loc + 1, ''))
-
-    statement = assignment | expression | comment
-    statement.setParseAction(lambda loc, t: Token(TokenType.STATEMENT, loc, t[0].end, t))
-
-    smake_file = OneOrMore(statement)
-    smake_file.parseWithTabs()
-
-    return smake_file
-
 # Error exceptions
 class InvalidInput(Exception):
     def __init__(self, message):
@@ -199,17 +53,17 @@ class InvalidInput(Exception):
 class Script:
     def __init__(self, pathdir):
         self.commands = []
-        self.cwd = pathdir
-        self.pathdir = pathdir
+        self._cwd = pathdir
+        self._pathdir = pathdir
 
     def set_cwd(self, cwd):
-        self.cwd = os.path.join(self.pathdir, cwd)
-        self.cwd = os.path.normpath(self.cwd)
+        self._cwd = os.path.join(self._pathdir, cwd)
+        self._cwd = os.path.normpath(self._cwd)
 
     def __repr__(self):
         return 'Script {\n' \
             + '\tcommands: ' + str(self.commands) + '\n' \
-            + '\tcwd: ' + str(self.cwd) + '\n' \
+            + '\tcwd: ' + str(self._cwd) + '\n' \
             + '}'
 
 # Build and Target structures
@@ -222,7 +76,8 @@ class Build:
         self.sources = []
         self.includes = []
         self.libraries = []
-        self.flags = ''
+        self.flags = []
+        self.macros = {}
         self.compiler = Build.DEFAULT_COMPILER
 
         # Fields to be filled by program
@@ -230,6 +85,18 @@ class Build:
         self._cc_dir = None
         self._cc_includes = None
         self._cc_sources = None
+
+    def define(self, macro_map):
+        # Make sure macro_map is a dictionary
+        if not isinstance(macro_map, dict):
+            raise InvalidInput('macro_map must be a dictionary')
+
+        # Make sure all keys are strings
+        for key in macro_map.keys():
+            if not isinstance(key, str):
+                raise InvalidInput('macro_map keys must be strings')
+
+        self.macros.update(macro_map)
 
     def set_compiler(self, compiler):
         self.compiler = compiler
@@ -244,19 +111,19 @@ class Build:
         self.libraries.extend(libraries)
 
     def set_flags(self, flags):
-        self.flags = flags
+        if isinstance(flags, list):
+            # Dont split here...
+            self.flags = flags
+        else:
+            self.flags = shlex.split(flags)
 
     def add_flags(self, flags):
         self.flags += ' ' + flags
-
-    def clone(self):
-        return copy.deepcopy(self)
 
 class Target:
     all = {}
 
     def __init__(self, name, path):
-        print('Creating target: ' + name)
         self.name = name
         self.path = path
         self.builds = {}
@@ -328,7 +195,9 @@ class Target:
     def on_install(self, *scripts):
         self.install_scripts.extend(scripts)
 
-def evaluate_file(grammar, path):
+import traceback
+
+def evaluate_file(path):
     # All variables in a single evaluation context
     pathdir = os.path.dirname(path)
 
@@ -341,8 +210,13 @@ def evaluate_file(grammar, path):
     file = open(path, 'r')
     content = file.read()
 
-    compiled = compile(content, path, 'exec')
-    exec(compiled, variables)
+    try:
+        compiled = compile(content, path, 'exec')
+        exec(compiled, variables)
+    except Exception as e:
+        print(message('error', colors.FAIL, str(e)))
+        traceback.print_tb(e.__traceback__)
+        exit(-1)
 
 # Read all .smake files from this directory or any subdirectory
 smake_files = []
@@ -353,9 +227,8 @@ for root, dirs, files in os.walk('.'):
             smake_file = os.path.join(root, file)
             smake_files.append(smake_file)
 
-grammar = generate_grammar()
 for smake_file in smake_files:
-    evaluate_file(grammar, smake_file)
+    evaluate_file(smake_file)
 
 def list_targets(targets):
     # Return if no targets
@@ -400,8 +273,6 @@ import subprocess
 #   it's not clear if it's worth it. For now, we skip caching
 #   Maybe we can multithread this?
 def preprocess_build(build):
-    print('Preprocessing build for target: ' + build.target.name)
-
     # TODO: expand sources (if regex) and make sure they exist
     build._cc_dir = os.path.dirname(build.path)
     fixed_sources = [os.path.join(build._cc_dir, source) for source in build.sources]
@@ -550,7 +421,12 @@ def generate_commands(build, mode):
         build_outputs.append(output)
 
         cmd_compile = [build.compiler, '-c', source, '-o', output]
+        cmd_compile += build.flags
         cmd_compile += build._cc_includes
+
+        for macro, value in build.macros.items():
+            cmd_compile.append('-D' + macro + '=' + str(value))
+
         command_map[source] = (output, cmd_compile)
 
     # Linking command
@@ -606,15 +482,23 @@ def compile_source(build, dependency_mtime, source, output, cmd_compile):
             counter.value += 1
         return source
 
-    proc = subprocess.Popen(cmd_compile)
+    proc = subprocess.Popen(cmd_compile, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     proc.wait()
     out, err = proc.communicate()
 
     with counter.get_lock():
-        if out != None:
+        out = out.decode('utf-8')
+        err = err.decode('utf-8')
+
+        spaced = False
+        if out != None and len(out) > 0:
+            print('\n')
+            spaced = True
             print(out)
 
-        if err != None:
+        if err != None and len(err) > 0:
+            if not spaced:
+                print('\n')
             print(err)
 
         if proc.returncode != 0:
@@ -650,6 +534,7 @@ def build_target(target, mode, threads=16):
             continue
 
         output, cmd_compile = command_map[source]
+        print(cmd_compile)
         args.append((build, dependency_mtime, source, output, cmd_compile))
 
     counter = multiprocessing.Value('i', 1)
@@ -672,6 +557,7 @@ def build_target(target, mode, threads=16):
 
     if len(failures) > 0:
         size = shutil.get_terminal_size()
+        print('\n')
         print(' ' * size.columns, end='\r')
         msg = 'Failed to compile the following sources:'
         print(message('error', colors.FAIL, msg))
@@ -680,10 +566,13 @@ def build_target(target, mode, threads=16):
         return
     else:
         size = shutil.get_terminal_size()
+        print('\n')
         print(' ' * size.columns, end='\r')
         msg = 'All sources compiled successfully'
         print(message('success', colors.OKGREEN, msg))
 
+    # Linking
+    # TODO: method
     output, cmd_link = command_map['__link__']
     proc = subprocess.Popen(cmd_link, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     proc.wait()
@@ -699,6 +588,9 @@ def build_target(target, mode, threads=16):
         msg = 'Failed to link the target ' + target.name + ' in mode ' + mode
         print(message('error', colors.FAIL, msg))
         return
+    else:
+        msg = 'Target ' + target.name + ' in mode ' + mode + ' linked successfully'
+        print(message('success', colors.OKGREEN, msg))
 
     if mode in target.post_builds:
         script_variables = {
@@ -720,7 +612,7 @@ def build_target(target, mode, threads=16):
         print(message('info', colors.OKBLUE, msg))
         for cmd in script.commands:
             print(message('exec', colors.OKCYAN, cmd))
-            subprocess.call(cmd, shell=True, cwd=script.cwd)
+            subprocess.call(cmd, shell=True, cwd=script._cwd)
 
 import argparse
 
