@@ -265,6 +265,48 @@ list_targets(Target.all)
 # TODO: error if no smake files found
 import subprocess
 
+def __dependency_thread_init__(_counter, _total):
+    global counter, total
+
+    counter = _counter
+    total = _total
+
+def get_dependencies(packed):
+    global counter, total
+
+    source, cmd = packed
+    proc = subprocess.Popen(cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+
+    proc.wait()
+    out, err = proc.communicate()
+
+    out = out.decode('utf-8')
+    err = err.decode('utf-8')
+
+    if proc.returncode != 0:
+        with counter.get_lock():
+            print(message('error', colors.FAIL, 'failed to get dependencies for ' + source))
+            print(err)
+        
+            msg = colors.BOLD + f'[{counter.value}/{total}]' + colors.RESET
+            msg += ' Generating dependencies...'
+            print(msg, end='\r')
+
+            counter.value += 1
+
+        return None
+
+    with counter.get_lock():
+        msg = colors.BOLD + f'[{counter.value}/{total}]' + colors.RESET
+        msg += ' Generating dependencies...'
+        print(msg, end='\r')
+        counter.value += 1
+    
+    return out.split(' ')[1:]
+
 # Preprocess a particular build configuration
 #   There are quite a few issues when trying to cache
 #   the dependencies. For example, we need to update the file
@@ -272,7 +314,7 @@ import subprocess
 #   of the dependencies change, etc. This is a lot of work, and
 #   it's not clear if it's worth it. For now, we skip caching
 #   Maybe we can multithread this?
-def preprocess_build(build):
+def preprocess_build(build, threads):
     # TODO: expand sources (if regex) and make sure they exist
     build._cc_dir = os.path.dirname(build.path)
     fixed_sources = [os.path.join(build._cc_dir, source) for source in build.sources]
@@ -302,76 +344,61 @@ def preprocess_build(build):
     cc_includes = ['-I' + include for include in cc_includes]
     cc_flags = build.flags
 
-    # Dependency generation command
-    cmd_dep = build.compiler + ' -MM ' + ' '.join(cc_includes) + ' ' + cc_flat_sources
-    print(cmd_dep)
+    # Generate the commands for generation dependencies
+    cc_dep_commands = []
+    for source in sources:
+        cmd = [build.compiler, '-MM', source]
+        cmd.extend(cc_includes)
 
-    dep_output = subprocess.check_output(cmd_dep, shell=True)
+        cc_dep_commands.append((source, cmd))
 
-    # Parse the dependency output
-    dep_output = dep_output.decode('utf-8')
-    dep_output = dep_output.split()
+    # Concurrently get dependencies
+    counter = multiprocessing.Value('i', 1)
+    with multiprocessing.Pool(threads,
+            initializer=__dependency_thread_init__,
+            initargs=(counter, len(cc_dep_commands))) as pool:
+        rets = pool.map(get_dependencies, cc_dep_commands)
 
-    # Separate for each file
-    dependency_set = set()
+    # Check for errors
+    for ret in rets:
+        if ret == None:
+            print()
+            print(message('error', colors.FAIL,
+                'Failed to generate dependencies'
+            ))
+
+            return False
+
+    # Process the dependencies
     dependency_list = []
-
     source_info = {}
 
-    source_index, index = 0, 0
-    while source_index < len(sources):
-        source = sources[source_index]
+    for i in range(len(sources)):
+        source = sources[i]
+        deps = rets[i]
+        indices = []
 
-        # Move to the next source
-        expected = os.path.basename(source)
-        expected = pathlib.Path(expected).stem + '.o'
+        for dep in deps:
+            dep = dep.strip()
+            if dep in ['', '\\', ':']:
+                continue
 
+            dep = os.path.normpath(dep)
+            if dep in dependency_list:
+                index = dependency_list.index(dep)
+            else:
+                index = len(dependency_list)
+                dependency_list.append(dep)
 
-        def loop_condition(index, expected):
-            if expected is None:
-                return True
+            indices.append(index)
 
-            return (dep_output[index] != expected) and \
-                (dep_output[index] != expected + ':')
-
-        while (index < len(dep_output)) and loop_condition(index, expected):
-            index += 1
-
-        assert (dep_output[index] == expected) \
-                or (dep_output[index] == expected + ':'), \
-                'invalid dependency output'
-
-        # Collect the dependencies
-        index += 1 # Skip the colon
-
-        next_expected = None
-        if source_index < len(sources) - 1:
-            next_expected = os.path.basename(sources[source_index + 1])
-            next_expected = pathlib.Path(next_expected).stem + '.o'
-
-        deps = []
-        while (index < len(dep_output)) and loop_condition(index, next_expected):
-            dep = dep_output[index]
-            if dep != '\\' and dep != ':':
-                dep = os.path.normpath(dep)
-
-                if dep in dependency_set:
-                    deps.append(dependency_list.index(dep))
-                else:
-                    deps.append(len(dependency_list))
-                    dependency_set.add(dep)
-                    dependency_list.append(dep)
-
-            index += 1
-
-        source_info[source] = deps
-        source_index += 1
+        source_info[source] = indices
 
     # Forward information to the build object
     build._cc_includes = cc_includes
     build._cc_depenedencies = dependency_list
     build._cc_sources = source_info
-
+    
 # Get modification time for each dependency
 def get_dependency_mtime(dependencies):
     dependency_mtime = []
@@ -453,17 +480,17 @@ def needs_recompile(build, source, source_out_mtime, dependency_mtime):
 
 import multiprocessing
 
-def __thread_init__(_lock, _counter, _total):
-    global lock, counter, line, total
+def __compile_thread_init__(_counter, _last, _total):
+    global counter, last, total
 
-    lock = _lock
     counter = _counter
+    last = _last
     total = _total
 
 import shutil
 
-def compile_source(build, dependency_mtime, source, output, cmd_compile):
-    global counter, total
+def compile_source(build, dependency_mtime, source, output, cmd_compile, index):
+    global counter, last, total
 
     source_out_mtime = 0
     if os.path.exists(output):
@@ -480,6 +507,10 @@ def compile_source(build, dependency_mtime, source, output, cmd_compile):
             msg += colors.OKBLUE + '(up to date)' + colors.RESET
             print(msg, end='\r')
             counter.value += 1
+
+        with last.get_lock():
+            last.value = index
+
         return source
 
     proc = subprocess.Popen(cmd_compile, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -507,8 +538,12 @@ def compile_source(build, dependency_mtime, source, output, cmd_compile):
             msg = colors.BOLD + f'[{counter.value}/{total}]' + colors.RESET
             msg += f' {source} '
             msg += colors.FAIL + '(failed)' + colors.RESET
-            print(msg, end='\r')
+            print(msg)
             counter.value += 1
+
+            with last.get_lock():
+                last.value = index
+
             return None
 
         size = shutil.get_terminal_size()
@@ -518,29 +553,40 @@ def compile_source(build, dependency_mtime, source, output, cmd_compile):
         msg += colors.OKGREEN + '(success)' + colors.RESET
         print(msg, end='\r')
         counter.value += 1
+
+        with last.get_lock():
+            last.value = index
+
         return source
 
 def build_target(target, mode, threads=16):
     build = target.builds[mode]
-    preprocess_build(build)
+
+    # TODO: decouple from this method
+    ret = preprocess_build(build, threads)
+    if ret != None:
+        return ret
 
     command_map, output = generate_commands(build, mode)
 
     dependency_mtime = get_dependency_mtime(build._cc_depenedencies)
 
     args = []
+
+    source_list = list(command_map.keys())
     for source in command_map:
         if source == '__link__':
             continue
 
         output, cmd_compile = command_map[source]
-        print(cmd_compile)
-        args.append((build, dependency_mtime, source, output, cmd_compile))
+        index = source_list.index(source)
+        args.append((build, dependency_mtime, source, output, cmd_compile, index))
 
     counter = multiprocessing.Value('i', 1)
+    last = multiprocessing.Value('i', -1)
     with multiprocessing.Pool(threads,
-                initializer=__thread_init__,
-                initargs=(multiprocessing.Lock(), counter, len(args))
+                initializer=__compile_thread_init__,
+                initargs=(counter, last, len(args))
             ) as pool:
         rets = pool.starmap(compile_source, args)
 
@@ -555,9 +601,14 @@ def build_target(target, mode, threads=16):
         if rets[i] == None:
             failures.append(source_indexed[i])
 
+    last_source = source_list[last.value]
     if len(failures) > 0:
         size = shutil.get_terminal_size()
-        print('\n')
+        if last_source in failures:
+            print()
+        else:
+            print('\n')
+
         print(' ' * size.columns, end='\r')
         msg = 'Failed to compile the following sources:'
         print(message('error', colors.FAIL, msg))
@@ -592,6 +643,7 @@ def build_target(target, mode, threads=16):
         msg = 'Target ' + target.name + ' in mode ' + mode + ' linked successfully'
         print(message('success', colors.OKGREEN, msg))
 
+    # TODO: another upper level method
     if mode in target.post_builds:
         script_variables = {
             'SMAKE_TARGET': os.path.abspath(output),
