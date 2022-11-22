@@ -1,23 +1,18 @@
-import copy
-
 multisource = target('multisource')
 
 sources = 'multisource/*.cpp'
 
-build_default = multisource.new_build()
+build_default = multisource.new_build('default')
+build_default = multisource.new_build('gdb')
+build_default = multisource.new_build('lldb')
 
 build_default.add_sources(sources)
 build_default.add_libraries('pthread')
 build_default.set_flags('-std=c++11')
 
-build_debug = copy.deepcopy(build_default)
-build_debug.add_flags('-g')
-
-multisource.add_builds(
-	build_default,
-	('gdb', build_debug),
-	('lldb', build_debug)
-)
+# TODO: how to copy?
+# build_debug = copy.deepcopy(build_default)
+# build_debug.add_flags('-g')
 
 multisource.set_post_builds(
 	('gdb', 'gdb $SMAKE_TARGET'),

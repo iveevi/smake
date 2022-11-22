@@ -1,10 +1,15 @@
 #!/usr/bin/env python
-import copy
+import argparse
+import colorama
+import hashlib
+import multiprocessing
 import os
 import pathlib
 import platform
-import colorama
 import shlex
+import shutil
+import subprocess
+import traceback
 
 from colorama import Fore, Style
 
@@ -60,6 +65,10 @@ class Script:
         self._cwd = os.path.join(self._pathdir, cwd)
         self._cwd = os.path.normpath(self._cwd)
 
+        if not os.path.exists(self._cwd):
+            msg = 'directory ' + self._cwd + ' does not exist'
+            raise InvalidInput(msg)
+
     def __repr__(self):
         return 'Script {\n' \
             + '\tcommands: ' + str(self.commands) + '\n' \
@@ -68,23 +77,62 @@ class Script:
 
 # Build and Target structures
 class Build:
+    # Constants
     DEFAULT_COMPILER = 'g++'
 
-    def __init__(self, target, path):
+    def __init__(self, target, path, mode):
+        # TODO: prevent pickle from serializing target...
         self.target = target
         self.path = path
-        self.sources = []
-        self.includes = []
-        self.libraries = []
-        self.flags = []
+        self.sources = set()
+        self.includes = set()
+        self.libraries = set()
+        self.flags = set()
         self.macros = {}
         self.compiler = Build.DEFAULT_COMPILER
 
         # Fields to be filled by program
-        self._cc_depenedencies = None
+        self._cc_dependencies = None
         self._cc_dir = None
         self._cc_includes = None
         self._cc_sources = None
+
+        # Encode unique identifier
+        self._code = target.name + '_' + mode
+
+    # Comparison to cached build
+    def __eq__(self, other):
+        if not isinstance(other, Build):
+            return False
+
+        # Check if all fields are equal
+        # TODO: can we ensuret hat we can one line all this?
+        if not self.target.name == other.target.name:
+            return False
+
+        if not self.path == other.path:
+            return False
+
+        if not self.sources == other.sources:
+            return False
+
+        if not self.includes == other.includes:
+            return False
+
+        if not self.libraries == other.libraries:
+            return False
+
+        if not self.flags == other.flags:
+            return False
+
+        for macro in self.macros:
+            if not macro in other.macros:
+                return False
+
+        if not self.compiler == other.compiler:
+            return False
+
+        return self._code == other._code
 
     def define(self, macro_map):
         # Make sure macro_map is a dictionary
@@ -102,13 +150,33 @@ class Build:
         self.compiler = compiler
 
     def add_sources(self, *sources):
-        self.sources.extend(sources)
+        for source in sources:
+            if isinstance(source, list):
+                self.sources.update(source)
+                # self.sources.extend(source)
+            elif isinstance(source, str):
+                self.sources.add(source)
+                # self.sources.append(source)
+            else:
+                raise InvalidInput('source must be a string or list of strings')
 
     def add_includes(self, *includes):
-        self.includes.extend(includes)
+        for include in includes:
+            if isinstance(include, list):
+                self.includes.update(include)
+            elif isinstance(include, str):
+                self.includes.add(include)
+            else:
+                raise InvalidInput('include must be a string or list of strings')
 
     def add_libraries(self, *libraries):
-        self.libraries.extend(libraries)
+        for library in libraries:
+            if isinstance(library, list):
+                self.libraries.update(library)
+            elif isinstance(library, str):
+                self.libraries.add(library)
+            else:
+                raise InvalidInput('library must be a string or list of strings')
 
     def set_flags(self, flags):
         if isinstance(flags, list):
@@ -135,29 +203,14 @@ class Target:
         # Add to all targets
         Target.all[name] = self
 
-    def new_build(self):
-        return Build(self, self.path)
+    def new_build(self, mode):
+        if mode in self.builds:
+            msg = 'build for mode ' + mode + ' already exists for target ' + self.name
+            print(message('warning', colors.WARNING, msg))
 
-    def add_build(self, build):
-        mode = 'default'
-        if isinstance(build, Build):
-            pass
-        elif isinstance(build, tuple) \
-                and isinstance(build[0], str) \
-                and isinstance(build[1], Build):
-            mode = build[0]
-            build = build[1]
-        else:
-            raise InvalidInput(
-                'provided argument must be of' + \
-                ' type Build or (str, Build)'
-            )
-        
+        build = Build(self, self.path, mode)
         self.builds[mode] = build
-
-    def add_builds(self, *builds):
-        for build in builds:
-            self.add_build(build)
+        return build
 
     def set_post_build(self, script):
         mode = 'default'
@@ -195,7 +248,21 @@ class Target:
     def on_install(self, *scripts):
         self.install_scripts.extend(scripts)
 
-import traceback
+def smake_import(path):
+    # Make sure path is a string
+    if not isinstance(path, str):
+        raise InvalidInput('path must be a string')
+
+    # Make sure path exists
+    if not os.path.exists(path):
+        raise InvalidInput('path ' + path + ' does not exist')
+
+    # Make sure path is a file
+    if not os.path.isfile(path):
+        raise InvalidInput('path ' + path + ' is not a file')
+
+    # Exec and extract variables
+    exec(open(path).read(), globals())
 
 def evaluate_file(path):
     # All variables in a single evaluation context
@@ -204,6 +271,7 @@ def evaluate_file(path):
     variables = {
             'target': lambda name: Target(name, path),
             'script': lambda: Script(pathdir),
+            'smake_import': smake_import,
     }
 
     # Open the file
@@ -212,23 +280,27 @@ def evaluate_file(path):
 
     try:
         compiled = compile(content, path, 'exec')
-        exec(compiled, variables)
+        exec(compiled, globals(), variables)
     except Exception as e:
         print(message('error', colors.FAIL, str(e)))
         traceback.print_tb(e.__traceback__)
         exit(-1)
 
 # Read all .smake files from this directory or any subdirectory
-smake_files = []
-for root, dirs, files in os.walk('.'):
-    path = root.split(os.sep)
-    for file in files:
-        if file.endswith('.smake'):
-            smake_file = os.path.join(root, file)
-            smake_files.append(smake_file)
+def load_smakes():
+    smake_files = []
+    for root, _, files in os.walk('.'):
+        for file in files:
+            if file.endswith('.smake'):
+                smake_file = os.path.join(root, file)
+                smake_files.append(smake_file)
 
-for smake_file in smake_files:
-    evaluate_file(smake_file)
+    for smake_file in smake_files:
+        evaluate_file(smake_file)
+
+    # Warn if no smake files found
+    if len(smake_files) == 0:
+        print(message('warning', colors.WARNING, 'no smake files found'))
 
 def list_targets(targets):
     # Return if no targets
@@ -259,11 +331,6 @@ def list_targets(targets):
         fmt = colors.OKCYAN + '{:<' + str(maxlen) + '}' + \
             colors.OKBLUE + '{}' + colors.RESET
         print(fmt.format(target.name, modes))
-
-list_targets(Target.all)
-
-# TODO: error if no smake files found
-import subprocess
 
 def __dependency_thread_init__(_counter, _total):
     global counter, total
@@ -314,15 +381,22 @@ def get_dependencies(packed):
 #   of the dependencies change, etc. This is a lot of work, and
 #   it's not clear if it's worth it. For now, we skip caching
 #   Maybe we can multithread this?
+import pickle
+
 def preprocess_build(build, threads):
     # TODO: expand sources (if regex) and make sure they exist
     build._cc_dir = os.path.dirname(build.path)
     fixed_sources = [os.path.join(build._cc_dir, source) for source in build.sources]
 
+    faulty_sources = False
+
+    # TODO: kernel for executing dependency commands
     sources = []
     for source in fixed_sources:
         p = pathlib.Path('.')
         glob = p.glob(source)
+
+        count = 0
         for g in glob:
             # Skip if directory (no recursive globbing)
             if g.is_dir():
@@ -331,18 +405,27 @@ def preprocess_build(build, threads):
             # Get absolute path
             g = os.path.abspath(g)
             sources.append(str(g))
+            count += 1
 
-    cc_flat_sources = ' '.join(sources)
+        if count == 0:
+            print(message('error', colors.FAIL, 'could not find source file(s) ' + source))
+            faulty_sources = True
+
+    if faulty_sources:
+        return False
 
     # Compile all includes
     cc_includes = []
     for include in build.includes:
-        include = os.path.join(build._cc_dir, include)
-        include = os.path.abspath(include)
-        cc_includes.append(include)
+        abs_include = os.path.join(build._cc_dir, include)
+        abs_include = os.path.abspath(abs_include)
+
+        if not os.path.exists(abs_include):
+            print(message('warning', colors.WARNING, 'could not locate include directory ' + include))
+        else:
+            cc_includes.append(abs_include)
 
     cc_includes = ['-I' + include for include in cc_includes]
-    cc_flags = build.flags
 
     # Generate the commands for generation dependencies
     cc_dep_commands = []
@@ -396,7 +479,7 @@ def preprocess_build(build, threads):
 
     # Forward information to the build object
     build._cc_includes = cc_includes
-    build._cc_depenedencies = dependency_list
+    build._cc_dependencies = dependency_list
     build._cc_sources = source_info
     
 # Get modification time for each dependency
@@ -409,8 +492,6 @@ def get_dependency_mtime(dependencies):
     return dependency_mtime
 
 # Generate build commands
-import hashlib
-
 def generate_commands(build, mode):
     # Create the build directories
     # TODO: assist method
@@ -478,16 +559,12 @@ def needs_recompile(build, source, source_out_mtime, dependency_mtime):
     
     return False
 
-import multiprocessing
-
 def __compile_thread_init__(_counter, _last, _total):
     global counter, last, total
 
     counter = _counter
     last = _last
     total = _total
-
-import shutil
 
 def compile_source(build, dependency_mtime, source, output, cmd_compile, index):
     global counter, last, total
@@ -559,17 +636,123 @@ def compile_source(build, dependency_mtime, source, output, cmd_compile, index):
 
         return source
 
-def build_target(target, mode, threads=16):
+def updated_sources(build, cached_time):
+    updated = []
+    for source in build._cc_sources:
+        source_mtime = os.path.getmtime(source)
+        if source_mtime > cached_time:
+            updated.append(source)
+
+    return updated
+
+def update_dependencies(build, updated_sources, threads):
+    # First prune old dependencies and reindex
+    dependencies = build._cc_dependencies
+
+    pruned_dependencies = []
+    pruned_sources = {}
+
+    for source in build._cc_sources:
+        if source in updated_sources:
+            continue
+
+        deps = build._cc_sources[source]
+
+        indices = []
+        for dep in deps:
+            dep = dependencies[dep]
+            if dep in pruned_sources:
+                indices.append(pruned_dependencies.index(dep))
+            else:
+                indices.append(dependencies.index(dep))
+                pruned_dependencies.append(dep)
+
+        pruned_sources[source] = indices
+
+    # Generate the commands for generating dependencies
+    cc_dep_commands = []
+    for source in updated_sources:
+        cmd = [build.compiler, '-MM', source]
+        cmd.extend(build._cc_includes)
+        cc_dep_commands.append((source, cmd))
+
+    # Concurrently generate dependencies
+    counter = multiprocessing.Value('i', 1)
+    with multiprocessing.Pool(threads,
+            initializer=__dependency_thread_init__,
+            initargs=(counter, len(cc_dep_commands))) as pool:
+        rets = pool.map(get_dependencies, cc_dep_commands)
+
+    for i in range(len(updated_sources)):
+        source = updated_sources[i]
+        deps = rets[i]
+
+        pruned_sources[source] = []
+        for dep in deps:
+            dep = dep.strip()
+            if dep in ['', '\\', ':']:
+                continue
+
+            if dep in pruned_dependencies:
+                pruned_sources[source].append(pruned_dependencies.index(dep))
+            else:
+                pruned_sources[source].append(len(pruned_dependencies))
+                pruned_dependencies.append(dep)
+
+    # Update the build object
+    build._cc_dependencies = pruned_dependencies
+    build._cc_sources = pruned_sources
+
+def build_target(target, mode, threads):
+    if mode not in target.builds:
+        msg = f'Build mode \'{mode}\' not found for target \'{target.name}\''
+        print(message('error', colors.FAIL, msg))
+        exit(1)
+
     build = target.builds[mode]
 
-    # TODO: decouple from this method
-    ret = preprocess_build(build, threads)
-    if ret != None:
-        return ret
+    # Check if we can use the cache
+    build_dir = os.path.dirname(build.path)
+    smake_dir = os.path.join(build_dir, '.smake')
+    cache_dir = os.path.join(smake_dir, 'serialized')
+    cache_file = os.path.join(cache_dir, build._code + '.smake.cache')
 
+    cache_success = False
+    if os.path.exists(cache_file):
+        with open(cache_file, 'rb') as f:
+            cache = pickle.load(f)
+            if cache == build:
+                # TODO: method
+                cached_time = os.path.getmtime(cache_file)
+                updated = updated_sources(cache, cached_time)
+                if len(updated) > 0:
+                    update_dependencies(cache, updated, threads)
+                cache_success = True
+                build = cache
+            elif not cache.flags == build.flags:
+                all_builds_dir = os.path.join(smake_dir, 'builds')
+                build_name = build.target.name + '-' + mode
+                build_dir = os.path.join(all_builds_dir, build_name)
+                shutil.rmtree(build_dir)
+
+
+    # TODO: decouple from this method
+    if not cache_success:
+        ret = preprocess_build(build, threads)
+        if ret != None:
+            return ret
+
+    # Cache the build object
+    # TODO: method
+    os.makedirs(cache_dir, exist_ok=True)
+    file = os.path.join(cache_dir, build._code + '.smake.cache')
+    with open(file, 'wb') as f:
+        pickle.dump(build, f)
+
+    # Generate commands for compiling
     command_map, output = generate_commands(build, mode)
 
-    dependency_mtime = get_dependency_mtime(build._cc_depenedencies)
+    dependency_mtime = get_dependency_mtime(build._cc_dependencies)
 
     args = []
 
@@ -666,16 +849,44 @@ def build_target(target, mode, threads=16):
             print(message('exec', colors.OKCYAN, cmd))
             subprocess.call(cmd, shell=True, cwd=script._cwd)
 
-import argparse
-
 argparser = argparse.ArgumentParser()
-argparser.add_argument('target', help='The target to build')
-argparser.add_argument('-m', "--mode", help="Execution mode", default='default')
+argparser.add_argument('target',
+    help='The target to build',
+    default=None,
+    nargs='?'
+)
 
-args = argparser.parse_args()
+argparser.add_argument('-m', "--mode",
+    help="Execution mode",
+    default='default'
+)
 
-print('args:', args)
+argparser.add_argument('-j', "--threads",
+    help="Number of threads to use",
+    default=os.cpu_count(),
+    type=int
+)
 
-build_target(Target.all[args.target], args.mode)
+argparser.add_argument('-l', "--list",
+    help="List all targets",
+    action='store_true'
+)
 
-# Use python to run this file itself?
+if __name__ == '__main__':
+    args = argparser.parse_args()
+
+    # Load all smake files
+    load_smakes()
+    targets = Target.all
+
+    if args.list:
+        list_targets(targets)
+        exit(0)
+
+    if args.target not in targets:
+        msg = 'Target ' + args.target + ' not found'
+        print(message('error', colors.FAIL, msg))
+        exit(1)
+
+    target = targets[args.target]
+    build_target(target, args.mode, args.threads)
