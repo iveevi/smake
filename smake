@@ -5,6 +5,7 @@ import hashlib
 import multiprocessing
 import os
 import pathlib
+import pickle
 import platform
 import shlex
 import shutil
@@ -54,6 +55,11 @@ class InvalidInput(Exception):
     def __str__(self):
         return self.message
 
+# Asserting a specific type
+def assert_type(var, vtype, msg):
+    if not isinstance(var, vtype):
+        raise InvalidInput(msg)
+
 # Script class to encapsulate script and its options
 class Script:
     def __init__(self, pathdir):
@@ -80,9 +86,9 @@ class Build:
     # Constants
     DEFAULT_COMPILER = 'g++'
 
-    def __init__(self, target, path, mode):
+    def __init__(self, code, path, exec=None):
         # TODO: prevent pickle from serializing target...
-        self.target = target
+        self.exec = exec # None if not executable/not linked
         self.path = path
         self.sources = set()
         self.includes = set()
@@ -91,6 +97,14 @@ class Build:
         self.macros = {}
         self.compiler = Build.DEFAULT_COMPILER
 
+        self.requires = [] # Build dependencies
+
+        # Configurations
+        # TODO: list of config attribute names for easy copy
+        self.linking = True
+        self.object_format = None
+        self.object_dir = None
+
         # Fields to be filled by program
         self._cc_dependencies = None
         self._cc_dir = None
@@ -98,7 +112,7 @@ class Build:
         self._cc_sources = None
 
         # Encode unique identifier
-        self._code = target.name + '_' + mode
+        self.code = code
 
     # Comparison to cached build
     def __eq__(self, other):
@@ -107,7 +121,8 @@ class Build:
 
         # Check if all fields are equal
         # TODO: can we ensuret hat we can one line all this?
-        if not self.target.name == other.target.name:
+        # NOTE: we do not check for requires
+        if not self.exec == other.exec:
             return False
 
         if not self.path == other.path:
@@ -125,14 +140,13 @@ class Build:
         if not self.flags == other.flags:
             return False
 
-        for macro in self.macros:
-            if not macro in other.macros:
-                return False
+        if not self.macros == other.macros:
+            return False
 
         if not self.compiler == other.compiler:
             return False
 
-        return self._code == other._code
+        return self.code == other.code
 
     def define(self, macro_map):
         # Make sure macro_map is a dictionary
@@ -145,6 +159,38 @@ class Build:
                 raise InvalidInput('macro_map keys must be strings')
 
         self.macros.update(macro_map)
+
+    # Editing the configuration
+    def config_key(self, key, value):
+        if not isinstance(key, str):
+            raise InvalidInput('keys must be strings')
+
+        if key == 'linking':
+            assert_type(value, bool, 'linking must be a boolean')
+            self.linking = value
+        elif key == 'object_format':
+            assert_type(value, str, 'object_format must be a string')
+            self.object_format = value
+        elif key == 'object_dir':
+            assert_type(value, str, 'object_dir must be a string')
+            self.object_dir = value
+        else:
+            raise InvalidInput('invalid configuration key "' + key + '"')
+
+    def config(self, configs):
+        assert_type(configs, dict, 'configuration must be a dictionary')
+        for key, value in configs.items():
+            self.config_key(key, value)
+
+    # Add build dependencies
+    def require(self, *builds):
+        for build in builds:
+            if isinstance(build, list):
+                self.requires.extend(build)
+            elif isinstance(build, Build):
+                self.requires.append(build)
+            else:
+                raise InvalidInput('build must be a Build or list of Builds')
 
     def set_compiler(self, compiler):
         self.compiler = compiler
@@ -196,6 +242,12 @@ class Target:
         self.path = path
         self.builds = {}
 
+        # Add to all targets
+        Target.all[name] = self
+        self.name = name
+        self.path = path
+        self.builds = {}
+
         # TODO: multiple post-builds and install scripts..
         self.post_builds = {}
         self.install_scripts = []
@@ -204,11 +256,14 @@ class Target:
         Target.all[name] = self
 
     def new_build(self, mode):
+        if not isinstance(mode, str):
+            raise InvalidInput('mode must be a string')
+
         if mode in self.builds:
             msg = 'build for mode ' + mode + ' already exists for target ' + self.name
             print(message('warning', colors.WARNING, msg))
 
-        build = Build(self, self.path, mode)
+        build = Build(self.name + '_' + mode, self.path, self.name)
         self.builds[mode] = build
         return build
 
@@ -248,30 +303,46 @@ class Target:
     def on_install(self, *scripts):
         self.install_scripts.extend(scripts)
 
-def smake_import(path):
+def smake_import(file, path):
+    file = os.path.join(path, file)
     # Make sure path is a string
-    if not isinstance(path, str):
+    if not isinstance(file, str):
         raise InvalidInput('path must be a string')
 
     # Make sure path exists
-    if not os.path.exists(path):
-        raise InvalidInput('path ' + path + ' does not exist')
+    if not os.path.exists(file):
+        raise InvalidInput('file' + file + ' does not exist')
 
     # Make sure path is a file
-    if not os.path.isfile(path):
-        raise InvalidInput('path ' + path + ' is not a file')
+    if not os.path.isfile(file):
+        raise InvalidInput('file' + file + ' is not a file')
 
     # Exec and extract variables
-    exec(open(path).read(), globals())
+    global_vars = globals()
+
+    global_vars['__file__'] = file
+    exec(open(file).read(), global_vars)
+
+# TODO: How useless is this?
+def localize(sources, list):
+    '''Localize a list of sources to a given directory'''
+    localized = []
+    for source in sources:
+        localized.append(os.path.join(list, source))
+    return localized
 
 def evaluate_file(path):
     # All variables in a single evaluation context
+    path = os.path.abspath(path)
     pathdir = os.path.dirname(path)
 
     variables = {
+            # TODO: these functions should go in a detail namespace or something
             'target': lambda name: Target(name, path),
             'script': lambda: Script(pathdir),
-            'smake_import': smake_import,
+            'smake_import': lambda file: smake_import(file, pathdir),
+            'proxy_build': lambda name: Build('proxy_' + name, path, name),
+            'localize': localize,
     }
 
     # Open the file
@@ -381,12 +452,13 @@ def get_dependencies(packed):
 #   of the dependencies change, etc. This is a lot of work, and
 #   it's not clear if it's worth it. For now, we skip caching
 #   Maybe we can multithread this?
-import pickle
-
 def preprocess_build(build, threads):
     # TODO: expand sources (if regex) and make sure they exist
     build._cc_dir = os.path.dirname(build.path)
-    fixed_sources = [os.path.join(build._cc_dir, source) for source in build.sources]
+    fixed_sources = [
+        os.path.relpath(os.path.join(build._cc_dir, source))
+        for source in build.sources
+    ]
 
     faulty_sources = False
 
@@ -492,15 +564,18 @@ def get_dependency_mtime(dependencies):
     return dependency_mtime
 
 # Generate build commands
-def generate_commands(build, mode):
+def generate_commands(build):
     # Create the build directories
     # TODO: assist method
     smake_dir = os.path.join(build._cc_dir, '.smake')
     all_builds_dir = os.path.join(smake_dir, 'builds')
 
-    build_name = build.target.name + '-' + mode
+    build_name = build.code
 
     build_dir = os.path.join(all_builds_dir, build_name)
+    if not build.object_dir is None:
+        build_dir = build.object_dir
+
     os.makedirs(build_dir, exist_ok=True)
 
     # Compilation commands
@@ -509,21 +584,43 @@ def generate_commands(build, mode):
 
     build_outputs = []
     for source in build._cc_sources:
-        output = source.replace('/', '_') + '.o'
+        # Object name map
+        filename = os.path.basename(source)
+        index_of_dot = filename.index('.')
+        basename = filename
+        if index_of_dot != -1:
+            basename = filename[:index_of_dot]
 
-        # Hash each output to a shorter name
-        m = hashlib.md5()
-        m.update(output.encode('utf-8'))
-        m = m.hexdigest()[:10]
-
-        if m in hashed_sources:
-            hashed_sources[m] += 1
+        naming_vars = {
+                'FILENAME': filename,
+                'BASENAME': basename
+        }
+        
+        output = None
+        if not build.object_format is None:
+            output = build.object_format
+            for var in naming_vars:
+                output = output.replace('${' + var + '}', naming_vars[var])
         else:
-            hashed_sources[m] = 1
+            # Create object output name
+            output = source.replace('/', '_') + '.o'
 
-        m += '{:04d}'.format(hashed_sources[m])
+            # Hash each output to a shorter name
+            m = hashlib.md5()
+            m.update(output.encode('utf-8'))
+            m = m.hexdigest()[:10]
 
-        output = m + '.o'
+            if m in hashed_sources:
+                hashed_sources[m] += 1
+            else:
+                hashed_sources[m] = 1
+
+            m += '{:04d}'.format(hashed_sources[m])
+
+            output = m + '.o'
+
+        # Keep in the designated build output directory
+        # unless otherwise specified
         output = os.path.join(build_dir, output)
 
         build_outputs.append(output)
@@ -533,21 +630,37 @@ def generate_commands(build, mode):
         cmd_compile += build._cc_includes
 
         for macro, value in build.macros.items():
-            cmd_compile.append('-D' + macro + '=' + str(value))
+            macro = '-D' + macro
+
+            if value is None:
+                pass # This is actually OK, define without value
+            if isinstance(value, str):
+                macro += '="' + value + '"'
+            elif isinstance(value, int):
+                macro += '=' + str(value)
+            else:
+                msg = message('warning', colors.WARNING, 'unsupported macro type ' + str(type(value)))
+                print(msg)
+
+                macro += '=' + str(value)
+
+            cmd_compile.append(macro)
 
         command_map[source] = (output, cmd_compile)
 
     # Linking command
-    all_targets_dir = os.path.join(smake_dir, 'targets')
-    os.makedirs(all_targets_dir, exist_ok=True)
+    output = None
+    if build.linking:
+        all_targets_dir = os.path.join(smake_dir, 'targets')
+        os.makedirs(all_targets_dir, exist_ok=True)
 
-    output = os.path.join(all_targets_dir, build.target.name)
+        output = os.path.join(all_targets_dir, build.exec)
 
-    cmd_link = [build.compiler, '-o', output]
-    cmd_link += build_outputs
-    cmd_link += ['-l' + lib for lib in build.libraries]
+        cmd_link = [build.compiler, '-o', output]
+        cmd_link += build_outputs
+        cmd_link += ['-l' + lib for lib in build.libraries]
 
-    command_map['__link__'] = (output, cmd_link)
+        command_map['__link__'] = (output, cmd_link)
 
     return command_map, output
 
@@ -703,19 +816,19 @@ def update_dependencies(build, updated_sources, threads):
     build._cc_dependencies = pruned_dependencies
     build._cc_sources = pruned_sources
 
-def build_target(target, mode, threads):
-    if mode not in target.builds:
-        msg = f'Build mode \'{mode}\' not found for target \'{target.name}\''
-        print(message('error', colors.FAIL, msg))
-        exit(1)
-
-    build = target.builds[mode]
+def do_build(build, threads):
+    for req in build.requires:
+        msg = f'Building dependency {req.code}...'
+        print(message('info', colors.OKBLUE, msg))
+        ret = do_build(req, threads)
+        if ret is None:
+            return None
 
     # Check if we can use the cache
     build_dir = os.path.dirname(build.path)
     smake_dir = os.path.join(build_dir, '.smake')
     cache_dir = os.path.join(smake_dir, 'serialized')
-    cache_file = os.path.join(cache_dir, build._code + '.smake.cache')
+    cache_file = os.path.join(cache_dir, build.code + '.smake.cache')
 
     cache_success = False
     if os.path.exists(cache_file):
@@ -728,29 +841,42 @@ def build_target(target, mode, threads):
                 if len(updated) > 0:
                     update_dependencies(cache, updated, threads)
                 cache_success = True
-                build = cache
-            elif not cache.flags == build.flags:
-                all_builds_dir = os.path.join(smake_dir, 'builds')
-                build_name = build.target.name + '-' + mode
-                build_dir = os.path.join(all_builds_dir, build_name)
-                shutil.rmtree(build_dir)
 
+                # NOTE: there are some fields that have to transfered from
+                # parsing which only apply during the compilation step
+                # TODO: method
+                cache.linking = build.linking
+                cache.object_format = build.object_format
+                cache.object_dir = build.object_dir
+
+                build = cache
+            # TODO: shouldnt we be checking this in either case?
+            elif not cache.flags == build.flags:
+                # TODO: method to check all conditions where we have to clear
+                # cached objects
+                all_builds_dir = os.path.join(smake_dir, 'builds')
+                build_dir = os.path.join(all_builds_dir, build.code)
+                shutil.rmtree(build_dir, ignore_errors=True)
+            elif not cache.macros == build.macros:
+                all_builds_dir = os.path.join(smake_dir, 'builds')
+                build_dir = os.path.join(all_builds_dir, build.code)
+                shutil.rmtree(build_dir, ignore_errors=True)
 
     # TODO: decouple from this method
     if not cache_success:
         ret = preprocess_build(build, threads)
         if ret != None:
-            return ret
+            return None
 
     # Cache the build object
     # TODO: method
     os.makedirs(cache_dir, exist_ok=True)
-    file = os.path.join(cache_dir, build._code + '.smake.cache')
+    file = os.path.join(cache_dir, build.code + '.smake.cache')
     with open(file, 'wb') as f:
         pickle.dump(build, f)
 
     # Generate commands for compiling
-    command_map, output = generate_commands(build, mode)
+    command_map, output = generate_commands(build)
 
     dependency_mtime = get_dependency_mtime(build._cc_dependencies)
 
@@ -776,7 +902,7 @@ def build_target(target, mode, threads):
     # Gather failed sources
     # TODO: method
     source_indexed = command_map.copy()
-    source_indexed.pop('__link__')
+    # source_indexed.pop('__link__')
     source_indexed = list(source_indexed.keys())
 
     failures = []
@@ -802,52 +928,34 @@ def build_target(target, mode, threads):
         size = shutil.get_terminal_size()
         print('\n')
         print(' ' * size.columns, end='\r')
-        msg = 'All sources compiled successfully'
+        msg = 'All sources compiled successfully for ' + build.code
         print(message('success', colors.OKGREEN, msg))
 
     # Linking
     # TODO: method
-    output, cmd_link = command_map['__link__']
-    proc = subprocess.Popen(cmd_link, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    proc.wait()
-    out, err = proc.communicate()
+    if build.linking:
+        output, cmd_link = command_map['__link__']
+        proc = subprocess.Popen(cmd_link, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc.wait()
+        out, err = proc.communicate()
 
-    if out != None and len(out) > 0:
-        print(out.decode('utf-8'))
+        if out != None and len(out) > 0:
+            print(out.decode('utf-8'))
 
-    if err != None and len(err) > 0:
-        print(err.decode('utf-8'))
+        if err != None and len(err) > 0:
+            print(err.decode('utf-8'))
 
-    if proc.returncode != 0:
-        msg = 'Failed to link the target ' + target.name + ' in mode ' + mode
-        print(message('error', colors.FAIL, msg))
-        return
-    else:
-        msg = 'Target ' + target.name + ' in mode ' + mode + ' linked successfully'
-        print(message('success', colors.OKGREEN, msg))
-
-    # TODO: another upper level method
-    if mode in target.post_builds:
-        script_variables = {
-            'SMAKE_TARGET': os.path.abspath(output),
-        }
-
-        script = target.post_builds[mode]
-        if len(script.commands) == 0:
-            msg = 'No commands specified in the post-build script'
-            print(message('warning', colors.WARNING, msg))
+        if proc.returncode != 0:
+            msg = 'Failed to link the target for ' + build.code
+            print(message('error', colors.FAIL, msg))
             return
+        else:
+            msg = 'Successfully linked the target for ' + build.code
+            print(message('success', colors.OKGREEN, msg))
 
-        for var in script_variables:
-            for i in range(len(script.commands)):
-                cmd = script.commands[i]
-                script.commands[i] = cmd.replace('$' + var, script_variables[var])
+        return output
 
-        msg = 'Running post-build script for target ' + target.name + ' in mode ' + mode
-        print(message('info', colors.OKBLUE, msg))
-        for cmd in script.commands:
-            print(message('exec', colors.OKCYAN, cmd))
-            subprocess.call(cmd, shell=True, cwd=script._cwd)
+    return 0
 
 argparser = argparse.ArgumentParser()
 argparser.add_argument('target',
@@ -889,4 +997,35 @@ if __name__ == '__main__':
         exit(1)
 
     target = targets[args.target]
-    build_target(target, args.mode, args.threads)
+    if args.mode not in target.builds:
+        msg = f'Build args.mode \'{args.mode}\' not found for target \'{target.name}\''
+        print(message('error', colors.FAIL, msg))
+        exit(1)
+
+    build = target.builds[args.mode]
+    output = do_build(build, args.threads)
+    if output == None:
+        exit(1)
+
+    # TODO: another upper level method
+    if args.mode in target.post_builds:
+        script_variables = {
+            'SMAKE_TARGET': os.path.abspath(output),
+        }
+
+        script = target.post_builds[args.mode]
+        if len(script.commands) == 0:
+            msg = 'No commands specified in the post-build script'
+            print(message('warning', colors.WARNING, msg))
+            exit(0)
+
+        for var in script_variables:
+            for i in range(len(script.commands)):
+                cmd = script.commands[i]
+                script.commands[i] = cmd.replace('${' + var + '}', script_variables[var])
+
+        msg = 'Running post-build script for target ' + target.name + ' in mode ' + args.mode
+        print(message('info', colors.OKBLUE, msg))
+        for cmd in script.commands:
+            print(message('exec', colors.OKCYAN, cmd))
+            subprocess.call(cmd, shell=True, cwd=script._cwd)
