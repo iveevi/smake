@@ -114,39 +114,21 @@ class Build:
         # Encode unique identifier
         self.code = code
 
-    # Comparison to cached build
-    def __eq__(self, other):
-        if not isinstance(other, Build):
-            return False
+    def copy(self, other):
+        # Copy most of the build's configuration
+        self.sources = other.sources
+        self.includes = other.includes
+        self.libraries = other.libraries
+        self.flags = other.flags
+        self.macros = other.macros
+        self.compiler = other.compiler
+        
+        self.requires = other.requires
 
-        # Check if all fields are equal
-        # TODO: can we ensuret hat we can one line all this?
-        # NOTE: we do not check for requires
-        if not self.exec == other.exec:
-            return False
-
-        if not self.path == other.path:
-            return False
-
-        if not self.sources == other.sources:
-            return False
-
-        if not self.includes == other.includes:
-            return False
-
-        if not self.libraries == other.libraries:
-            return False
-
-        if not self.flags == other.flags:
-            return False
-
-        if not self.macros == other.macros:
-            return False
-
-        if not self.compiler == other.compiler:
-            return False
-
-        return self.code == other.code
+        # Configurations
+        self.linking = other.linking
+        self.object_format = other.object_format
+        self.object_dir = other.object_dir
 
     def define(self, macro_map):
         # Make sure macro_map is a dictionary
@@ -233,6 +215,40 @@ class Build:
 
     def add_flags(self, flags):
         self.flags += ' ' + flags
+
+    # Comparison to cached build
+    def __eq__(self, other):
+        if not isinstance(other, Build):
+            return False
+
+        # Check if all fields are equal
+        # TODO: can we ensuret hat we can one line all this?
+        # NOTE: we do not check for requires
+        if not self.exec == other.exec:
+            return False
+
+        if not self.path == other.path:
+            return False
+
+        if not self.sources == other.sources:
+            return False
+
+        if not self.includes == other.includes:
+            return False
+
+        if not self.libraries == other.libraries:
+            return False
+
+        if not self.flags == other.flags:
+            return False
+
+        if not self.macros == other.macros:
+            return False
+
+        if not self.compiler == other.compiler:
+            return False
+
+        return self.code == other.code
 
 class Target:
     all = {}
@@ -540,12 +556,10 @@ def preprocess_build(build, threads):
 
             dep = os.path.normpath(dep)
             if dep in dependency_list:
-                index = dependency_list.index(dep)
+                indices.append(dependency_list.index(dep))
             else:
-                index = len(dependency_list)
+                indices.append(len(dependency_list))
                 dependency_list.append(dep)
-
-            indices.append(index)
 
         source_info[source] = indices
 
@@ -711,17 +725,6 @@ def compile_source(build, dependency_mtime, source, output, cmd_compile, index):
         out = out.decode('utf-8')
         err = err.decode('utf-8')
 
-        spaced = False
-        if out != None and len(out) > 0:
-            print('\n')
-            spaced = True
-            print(out)
-
-        if err != None and len(err) > 0:
-            if not spaced:
-                print('\n')
-            print(err)
-
         if proc.returncode != 0:
             size = shutil.get_terminal_size()
             print(' ' * size.columns, end='\r')
@@ -733,6 +736,18 @@ def compile_source(build, dependency_mtime, source, output, cmd_compile, index):
 
             with last.get_lock():
                 last.value = index
+
+            # TODO: dump output method
+            spaced = False
+            if out != None and len(out) > 0:
+                print('\n')
+                spaced = True
+                print(out)
+
+            if err != None and len(err) > 0:
+                if not spaced:
+                    print('\n')
+                print(err)
 
             return None
 
@@ -746,6 +761,18 @@ def compile_source(build, dependency_mtime, source, output, cmd_compile, index):
 
         with last.get_lock():
             last.value = index
+        
+        # TODO: dump output method
+        spaced = False
+        if out != None and len(out) > 0:
+            print('\n')
+            spaced = True
+            print(out)
+
+        if err != None and len(err) > 0:
+            if not spaced:
+                print('\n')
+            print(err)
 
         return source
 
@@ -774,10 +801,10 @@ def update_dependencies(build, updated_sources, threads):
         indices = []
         for dep in deps:
             dep = dependencies[dep]
-            if dep in pruned_sources:
+            if dep in pruned_dependencies:
                 indices.append(pruned_dependencies.index(dep))
             else:
-                indices.append(dependencies.index(dep))
+                indices.append(len(pruned_dependencies))
                 pruned_dependencies.append(dep)
 
         pruned_sources[source] = indices
@@ -800,17 +827,19 @@ def update_dependencies(build, updated_sources, threads):
         source = updated_sources[i]
         deps = rets[i]
 
-        pruned_sources[source] = []
+        indices = []
         for dep in deps:
             dep = dep.strip()
             if dep in ['', '\\', ':']:
                 continue
 
             if dep in pruned_dependencies:
-                pruned_sources[source].append(pruned_dependencies.index(dep))
+                indices.append(pruned_dependencies.index(dep))
             else:
-                pruned_sources[source].append(len(pruned_dependencies))
+                indices.append(len(pruned_dependencies))
                 pruned_dependencies.append(dep)
+
+        pruned_sources[source] = indices
 
     # Update the build object
     build._cc_dependencies = pruned_dependencies
@@ -861,7 +890,7 @@ def do_build(build, threads):
                 all_builds_dir = os.path.join(smake_dir, 'builds')
                 build_dir = os.path.join(all_builds_dir, build.code)
                 shutil.rmtree(build_dir, ignore_errors=True)
-
+    
     # TODO: decouple from this method
     if not cache_success:
         ret = preprocess_build(build, threads)
@@ -877,7 +906,6 @@ def do_build(build, threads):
 
     # Generate commands for compiling
     command_map, output = generate_commands(build)
-
     dependency_mtime = get_dependency_mtime(build._cc_dependencies)
 
     args = []
@@ -926,7 +954,7 @@ def do_build(build, threads):
         return
     else:
         size = shutil.get_terminal_size()
-        print('\n')
+        print()
         print(' ' * size.columns, end='\r')
         msg = 'All sources compiled successfully for ' + build.code
         print(message('success', colors.OKGREEN, msg))
@@ -952,8 +980,14 @@ def do_build(build, threads):
         else:
             msg = 'Successfully linked the target for ' + build.code
             print(message('success', colors.OKGREEN, msg))
+    
+        # Add a line between all the output
+        print()
 
         return output
+
+    # Add a line between all the output
+    print()
 
     return 0
 
@@ -998,7 +1032,7 @@ if __name__ == '__main__':
 
     target = targets[args.target]
     if args.mode not in target.builds:
-        msg = f'Build args.mode \'{args.mode}\' not found for target \'{target.name}\''
+        msg = f'Build mode \'{args.mode}\' not found for target \'{target.name}\''
         print(message('error', colors.FAIL, msg))
         exit(1)
 
@@ -1006,7 +1040,7 @@ if __name__ == '__main__':
     output = do_build(build, args.threads)
     if output == None:
         exit(1)
-
+    
     # TODO: another upper level method
     if args.mode in target.post_builds:
         script_variables = {
