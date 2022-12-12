@@ -181,12 +181,14 @@ class Build:
         for source in sources:
             if isinstance(source, list):
                 self.sources.update(source)
-                # self.sources.extend(source)
             elif isinstance(source, str):
                 self.sources.add(source)
-                # self.sources.append(source)
             else:
                 raise InvalidInput('source must be a string or list of strings')
+
+    def set_sources(self, *sources):
+        self.sources = set()
+        self.add_sources(*sources)
 
     def add_includes(self, *includes):
         for include in includes:
@@ -230,7 +232,31 @@ class Build:
         if not self.path == other.path:
             return False
 
-        if not self.sources == other.sources:
+        if not set(self._cc_sources) == set(other._cc_sources):
+            return False
+
+        if not self.includes == other.includes:
+            return False
+
+        if not self.libraries == other.libraries:
+            return False
+
+        if not self.flags == other.flags:
+            return False
+
+        if not self.macros == other.macros:
+            return False
+
+        if not self.compiler == other.compiler:
+            return False
+
+        if not self.linking == other.linking:
+            return False
+
+        if not self.object_format == other.object_format:
+            return False
+
+        if not self.object_dir == other.object_dir:
             return False
 
         if not self.includes == other.includes:
@@ -461,6 +487,42 @@ def get_dependencies(packed):
     
     return out.split(' ')[1:]
 
+# Expand source list for a build
+def expand_sources(build):
+    build._cc_dir = os.path.dirname(build.path)
+    fixed_sources = [
+        os.path.relpath(os.path.join(build._cc_dir, source))
+        for source in build.sources
+    ]
+
+    faulty_sources = False
+
+    # TODO: kernel for executing dependency commands
+    sources = []
+    for source in fixed_sources:
+        p = pathlib.Path('.')
+        glob = p.glob(source)
+
+        count = 0
+        for g in glob:
+            # Skip if directory (no recursive globbing)
+            if g.is_dir():
+                continue
+
+            # Get absolute path
+            g = os.path.abspath(g)
+            sources.append(str(g))
+            count += 1
+        
+        if count == 0:
+            print(message('error', colors.FAIL, 'could not find source file(s) ' + source))
+            faulty_sources = True
+    
+    if faulty_sources:
+        return False
+
+    build._cc_sources = set(sources)
+
 # Preprocess a particular build configuration
 #   There are quite a few issues when trying to cache
 #   the dependencies. For example, we need to update the file
@@ -569,9 +631,21 @@ def preprocess_build(build, threads):
     build._cc_sources = source_info
     
 # Get modification time for each dependency
-def get_dependency_mtime(dependencies):
+def get_dependency_mtime(sources, dependencies):
     dependency_mtime = []
     for dependency in dependencies:
+        index = dependencies.index(dependency)
+
+        if not os.path.exists(dependency):
+            msg = 'could not locate dependency ' + dependency
+            print(message('error', colors.FAIL, msg))
+
+            for source in sources:
+                if index in sources[source]:
+                    print('\tin', os.path.relpath(source))
+
+            exit(1)
+
         mtime = os.path.getmtime(dependency)
         dependency_mtime.append(mtime)
 
@@ -823,9 +897,14 @@ def update_dependencies(build, updated_sources, threads):
             initargs=(counter, len(cc_dep_commands))) as pool:
         rets = pool.map(get_dependencies, cc_dep_commands)
 
+    failed = []
     for i in range(len(updated_sources)):
         source = updated_sources[i]
         deps = rets[i]
+
+        if deps is None:
+            failed.append(source)
+            continue
 
         indices = []
         for dep in deps:
@@ -841,17 +920,18 @@ def update_dependencies(build, updated_sources, threads):
 
         pruned_sources[source] = indices
 
+    if len(failed) > 0:
+        return failed
+
     # Update the build object
     build._cc_dependencies = pruned_dependencies
     build._cc_sources = pruned_sources
+    return None
 
-def do_build(build, threads):
-    for req in build.requires:
-        msg = f'Building dependency {req.code}...'
-        print(message('info', colors.OKBLUE, msg))
-        ret = do_build(req, threads)
-        if ret is None:
-            return None
+def prepare_build(build, threads):
+    # Expand the sources
+    if not expand_sources(build) is None:
+        return None
 
     # Check if we can use the cache
     build_dir = os.path.dirname(build.path)
@@ -868,7 +948,14 @@ def do_build(build, threads):
                 cached_time = os.path.getmtime(cache_file)
                 updated = updated_sources(cache, cached_time)
                 if len(updated) > 0:
-                    update_dependencies(cache, updated, threads)
+                    failed = update_dependencies(cache, updated, threads)
+                    if (not failed is None) and len(failed) > 0:
+                        msg = f'Failed to update dependencies for the following sources:'
+                        print(message('error', colors.FAIL, msg))
+                        for source in failed:
+                            print(f'\t{source}')
+                        return None
+
                 cache_success = True
 
                 # NOTE: there are some fields that have to transfered from
@@ -904,9 +991,23 @@ def do_build(build, threads):
     with open(file, 'wb') as f:
         pickle.dump(build, f)
 
+    return build
+
+def do_build(build, threads):
+    for req in build.requires:
+        msg = f'Building dependency {req.code}...'
+        print(message('info', colors.OKBLUE, msg))
+        req = prepare_build(req, threads)
+        ret = do_build(req, threads)
+        if ret is None:
+            return None
+
     # Generate commands for compiling
     command_map, output = generate_commands(build)
-    dependency_mtime = get_dependency_mtime(build._cc_dependencies)
+    dependency_mtime = get_dependency_mtime(
+        build._cc_sources,
+        build._cc_dependencies
+    )
 
     args = []
 
@@ -964,7 +1065,6 @@ def do_build(build, threads):
     if build.linking:
         output, cmd_link = command_map['__link__']
         proc = subprocess.Popen(cmd_link, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        proc.wait()
         out, err = proc.communicate()
 
         if out != None and len(out) > 0:
@@ -998,21 +1098,28 @@ argparser.add_argument('target',
     nargs='?'
 )
 
-argparser.add_argument('-m', "--mode",
+argparser.add_argument('-m', '--mode',
     help="Execution mode",
     default='default'
 )
 
-argparser.add_argument('-j', "--threads",
+argparser.add_argument('-j', '--threads',
     help="Number of threads to use",
     default=os.cpu_count(),
     type=int
+)
+
+argparser.add_argument('-g', '--generate_commands',
+    help='Generate commands for compiling',
+    action='store_true'
 )
 
 argparser.add_argument('-l', "--list",
     help="List all targets",
     action='store_true'
 )
+
+import json
 
 if __name__ == '__main__':
     args = argparser.parse_args()
@@ -1037,9 +1144,35 @@ if __name__ == '__main__':
         exit(1)
 
     build = target.builds[args.mode]
+    build = prepare_build(build, args.threads)
+
+    # If asked to generate compile commands, output and quit
+    if args.generate_commands:
+        # TODO: method
+        command_map, output = generate_commands(build)
+        serialized = []
+        for out in command_map:
+            if out == '__link__':
+                continue
+
+            command = {}
+            command['directory'] = '.'
+            command['file'] = out
+            command['output'] = command_map[out][0]
+            command['arguments'] = command_map[out][1]
+
+            serialized.append(command)
+
+        with open('compile_commands.json', 'w') as file:
+            file.write(json.dumps(serialized, indent=4))
+
+        exit(0)
+
     output = do_build(build, args.threads)
     if output == None:
         exit(1)
+
+    # TODO: flags to clear object cache and build serliazation cache
     
     # TODO: another upper level method
     if args.mode in target.post_builds:

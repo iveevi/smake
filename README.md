@@ -11,8 +11,6 @@ every project has a set of targets, and each target has a set of build modes. Wh
 smake is run on a target with a specific build mode, it will run the build 
 corresponding to that mode.
 
-![pictures/smake.png](https://github.com/vedavamadathil/smake/blob/main/pictures/smake.png?raw=true)
-
 Each mode also has a post-build script that can be run. For most builds, this will
 simply be executing the target object file, but in some cases, the user may want
 to run a different command (i.e. `gdb` or `valgrind`) with the object file.
@@ -20,8 +18,8 @@ to run a different command (i.e. `gdb` or `valgrind`) with the object file.
 ## Install
 
 Smake can be installed easily with `pip install smake`.
-
 One can also simply clone the source and link the `smake` executable.
+
 
 ## How does it work?
 
